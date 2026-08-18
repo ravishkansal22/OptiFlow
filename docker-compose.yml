@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: optiflow-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: optiflow-api
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - MIREYE_API_KEY=${MIREYE_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    depends_on:
+      - redis
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: optiflow-frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  redis_data:

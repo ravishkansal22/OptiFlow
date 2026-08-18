@@ -1,0 +1,370 @@
+{
+  "region_name": "Puget Sound Logistics Corridor",
+  "bounding_box": [47.10, -122.50, 47.90, -121.90],
+  "suppliers": [
+    {
+      "id": "sup_tacoma_port",
+      "name": "Port of Tacoma Intermodal Terminal",
+      "lat": 47.2725,
+      "lon": -122.4182,
+      "capacity_units": 65000,
+      "unit_supply_cost": 8.5
+    },
+    {
+      "id": "sup_seattle_port",
+      "name": "Port of Seattle Terminal 18",
+      "lat": 47.5878,
+      "lon": -122.3551,
+      "capacity_units": 60000,
+      "unit_supply_cost": 9.0
+    },
+    {
+      "id": "sup_seatac_air",
+      "name": "SeaTac Air Cargo Logistics Gateway",
+      "lat": 47.4489,
+      "lon": -122.3094,
+      "capacity_units": 35000,
+      "unit_supply_cost": 14.5
+    },
+    {
+      "id": "sup_kent_rail",
+      "name": "BNSF Kent Valley Freight Hub",
+      "lat": 47.3809,
+      "lon": -122.2348,
+      "capacity_units": 50000,
+      "unit_supply_cost": 8.0
+    },
+    {
+      "id": "sup_snohomish_hub",
+      "name": "Everett Northern Gateway Distribution",
+      "lat": 47.9789,
+      "lon": -122.2021,
+      "capacity_units": 30000,
+      "unit_supply_cost": 10.0
+    }
+  ],
+  "candidate_warehouses": [
+    {
+      "id": "cand_kent_north",
+      "name": "Kent Valley North Industrial Park",
+      "lat": 47.4124,
+      "lon": -122.2415,
+      "base_capacity": 25000,
+      "fixed_cost": 135000,
+      "parcel_sqm": 65000,
+      "land_cover": "Industrial",
+      "base_elevation_m": 12.5,
+      "base_slope_pct": 0.8
+    },
+    {
+      "id": "cand_kent_south",
+      "name": "Green River Logistics Center (South Kent)",
+      "lat": 47.3688,
+      "lon": -122.2289,
+      "base_capacity": 28000,
+      "fixed_cost": 125000,
+      "parcel_sqm": 72000,
+      "land_cover": "Industrial",
+      "base_elevation_m": 9.2,
+      "base_slope_pct": 0.5
+    },
+    {
+      "id": "cand_auburn_super",
+      "name": "Auburn 400 Logistics Hub",
+      "lat": 47.3075,
+      "lon": -122.2257,
+      "base_capacity": 32000,
+      "fixed_cost": 140000,
+      "parcel_sqm": 85000,
+      "land_cover": "Industrial",
+      "base_elevation_m": 22.0,
+      "base_slope_pct": 1.2
+    },
+    {
+      "id": "cand_sumner_gateway",
+      "name": "Sumner Valley Industrial Node",
+      "lat": 47.2029,
+      "lon": -122.2423,
+      "base_capacity": 24000,
+      "fixed_cost": 115000,
+      "parcel_sqm": 58000,
+      "land_cover": "Industrial",
+      "base_elevation_m": 18.5,
+      "base_slope_pct": 1.0
+    },
+    {
+      "id": "cand_fife_terminal",
+      "name": "Fife Port Proximity Logistics",
+      "lat": 47.2389,
+      "lon": -122.3611,
+      "base_capacity": 22000,
+      "fixed_cost": 130000,
+      "parcel_sqm": 49000,
+      "land_cover": "Commercial",
+      "base_elevation_m": 6.8,
+      "base_slope_pct": 0.6
+    },
+    {
+      "id": "cand_trenton_renton",
+      "name": "Renton Boeing Corridor Parcel",
+      "lat": 47.4789,
+      "lon": -122.2033,
+      "base_capacity": 20000,
+      "fixed_cost": 155000,
+      "parcel_sqm": 42000,
+      "land_cover": "Industrial",
+      "base_elevation_m": 35.0,
+      "base_slope_pct": 2.1
+    },
+    {
+      "id": "cand_tukwila_interchange",
+      "name": "Tukwila I-5 / I-405 Junction",
+      "lat": 47.4651,
+      "lon": -122.2612,
+      "base_capacity": 26000,
+      "fixed_cost": 160000,
+      "parcel_sqm": 54000,
+      "land_cover": "Industrial",
+      "base_elevation_m": 24.0,
+      "base_slope_pct": 1.4
+    },
+    {
+      "id": "cand_bellevue_factoria",
+      "name": "Eastside Tech Distribution Facility",
+      "lat": 47.5789,
+      "lon": -122.1645,
+      "base_capacity": 18000,
+      "fixed_cost": 195000,
+      "parcel_sqm": 38000,
+      "land_cover": "Commercial",
+      "base_elevation_m": 68.0,
+      "base_slope_pct": 3.2
+    },
+    {
+      "id": "cand_redmond_overlake",
+      "name": "Redmond Bear Creek Parcel",
+      "lat": 47.6711,
+      "lon": -122.1156,
+      "base_capacity": 16000,
+      "fixed_cost": 185000,
+      "parcel_sqm": 35000,
+      "land_cover": "Commercial",
+      "base_elevation_m": 48.0,
+      "base_slope_pct": 2.8
+    },
+    {
+      "id": "cand_kirkland_totem",
+      "name": "Totem Lake Logistics Yard",
+      "lat": 47.7056,
+      "lon": -122.1812,
+      "base_capacity": 15000,
+      "fixed_cost": 170000,
+      "parcel_sqm": 32000,
+      "land_cover": "Commercial",
+      "base_elevation_m": 55.0,
+      "base_slope_pct": 2.5
+    },
+    {
+      "id": "cand_woodinville_north",
+      "name": "Woodinville Industrial Park",
+      "lat": 47.7551,
+      "lon": -122.1554,
+      "base_capacity": 20000,
+      "fixed_cost": 145000,
+      "parcel_sqm": 48000,
+      "land_cover": "Industrial",
+      "base_elevation_m": 42.0,
+      "base_slope_pct": 1.9
+    },
+    {
+      "id": "cand_bothell_canyon",
+      "name": "Bothell North Creek Campus",
+      "lat": 47.7889,
+      "lon": -122.2056,
+      "base_capacity": 18000,
+      "fixed_cost": 150000,
+      "parcel_sqm": 41000,
+      "land_cover": "Industrial",
+      "base_elevation_m": 38.0,
+      "base_slope_pct": 2.0
+    },
+    {
+      "id": "cand_lynnwood_junction",
+      "name": "Lynnwood Highway 99 Yard",
+      "lat": 47.8211,
+      "lon": -122.3123,
+      "base_capacity": 19000,
+      "fixed_cost": 140000,
+      "parcel_sqm": 44000,
+      "land_cover": "Industrial",
+      "base_elevation_m": 115.0,
+      "base_slope_pct": 2.4
+    },
+    {
+      "id": "cand_everett_seaway",
+      "name": "Everett Seaway Logistics Center",
+      "lat": 47.9256,
+      "lon": -122.2541,
+      "base_capacity": 27000,
+      "fixed_cost": 130000,
+      "parcel_sqm": 68000,
+      "land_cover": "Industrial",
+      "base_elevation_m": 95.0,
+      "base_slope_pct": 1.5
+    },
+    {
+      "id": "cand_federalway_south",
+      "name": "Federal Way Gateway 320th",
+      "lat": 47.3189,
+      "lon": -122.3211,
+      "base_capacity": 21000,
+      "fixed_cost": 135000,
+      "parcel_sqm": 50000,
+      "land_cover": "Commercial",
+      "base_elevation_m": 88.0,
+      "base_slope_pct": 1.7
+    },
+    {
+      "id": "cand_tacoma_portland_ave",
+      "name": "Puyallup River Confluence Site",
+      "lat": 47.2412,
+      "lon": -122.4089,
+      "base_capacity": 25000,
+      "fixed_cost": 120000,
+      "parcel_sqm": 59000,
+      "land_cover": "Industrial",
+      "base_elevation_m": 5.4,
+      "base_slope_pct": 0.4
+    },
+    {
+      "id": "cand_interbay_seattle",
+      "name": "Seattle Interbay Urban Terminal",
+      "lat": 47.6489,
+      "lon": -122.3812,
+      "base_capacity": 14000,
+      "fixed_cost": 220000,
+      "parcel_sqm": 28000,
+      "land_cover": "Industrial",
+      "base_elevation_m": 7.5,
+      "base_slope_pct": 1.1
+    },
+    {
+      "id": "cand_soodo_seattle",
+      "name": "SODO Industrial Core",
+      "lat": 47.5689,
+      "lon": -122.3312,
+      "base_capacity": 23000,
+      "fixed_cost": 210000,
+      "parcel_sqm": 46000,
+      "land_cover": "Industrial",
+      "base_elevation_m": 6.2,
+      "base_slope_pct": 0.5
+    },
+    {
+      "id": "cand_high_slope_cougar",
+      "name": "Cougar Mountain Highland Tract (Unbuildable)",
+      "lat": 47.5350,
+      "lon": -122.1020,
+      "base_capacity": 12000,
+      "fixed_cost": 180000,
+      "parcel_sqm": 22000,
+      "land_cover": "Forestry/SteepSlope",
+      "base_elevation_m": 310.0,
+      "base_slope_pct": 14.8
+    },
+    {
+      "id": "cand_restricted_wetland",
+      "name": "Nisqually Delta Conservation Zone",
+      "lat": 47.1200,
+      "lon": -122.6800,
+      "base_capacity": 10000,
+      "fixed_cost": 95000,
+      "parcel_sqm": 18000,
+      "land_cover": "ProtectedWetland",
+      "base_elevation_m": 2.1,
+      "base_slope_pct": 0.2
+    }
+  ],
+  "customers": [
+    { "id": "cust_sea_dt", "name": "Seattle Downtown & Belltown", "lat": 47.6101, "lon": -122.3421, "demand_units": 4500, "service_sla_minutes": 45, "priority": 2 },
+    { "id": "cust_sea_capitol", "name": "Seattle Capitol Hill & Central", "lat": 47.6253, "lon": -122.3214, "demand_units": 3800, "service_sla_minutes": 45, "priority": 1 },
+    { "id": "cust_sea_slu", "name": "South Lake Union Tech Hub", "lat": 47.6231, "lon": -122.3381, "demand_units": 4200, "service_sla_minutes": 40, "priority": 2 },
+    { "id": "cust_sea_ballard", "name": "Ballard & Magnolia Commercial", "lat": 47.6682, "lon": -122.3854, "demand_units": 2600, "service_sla_minutes": 55, "priority": 1 },
+    { "id": "cust_sea_hospital", "name": "First Hill Regional Medical Center", "lat": 47.6089, "lon": -122.3234, "demand_units": 3100, "service_sla_minutes": 30, "priority": 3 },
+    { "id": "cust_sea_uw", "name": "University District & Montlake", "lat": 47.6553, "lon": -122.3035, "demand_units": 3200, "service_sla_minutes": 50, "priority": 1 },
+    { "id": "cust_sea_west", "name": "West Seattle & Alki Junction", "lat": 47.5612, "lon": -122.3871, "demand_units": 2400, "service_sla_minutes": 50, "priority": 1 },
+    { "id": "cust_bel_dt", "name": "Bellevue CBD & Transit Center", "lat": 47.6158, "lon": -122.1972, "demand_units": 4800, "service_sla_minutes": 45, "priority": 2 },
+    { "id": "cust_bel_crossroads", "name": "Bellevue Crossroads & Eastgate", "lat": 47.6189, "lon": -122.1389, "demand_units": 2700, "service_sla_minutes": 50, "priority": 1 },
+    { "id": "cust_red_campus", "name": "Redmond Tech Campus & Town Center", "lat": 47.6740, "lon": -122.1215, "demand_units": 4100, "service_sla_minutes": 45, "priority": 2 },
+    { "id": "cust_kirk_waterfront", "name": "Kirkland Marina & Totem Core", "lat": 47.6815, "lon": -122.2087, "demand_units": 2300, "service_sla_minutes": 50, "priority": 1 },
+    { "id": "cust_ren_highlands", "name": "Renton Highlands & Landing", "lat": 47.5023, "lon": -122.1789, "demand_units": 2900, "service_sla_minutes": 45, "priority": 1 },
+    { "id": "cust_ren_valley", "name": "Renton Valley Medical Center", "lat": 47.4689, "lon": -122.1989, "demand_units": 2800, "service_sla_minutes": 35, "priority": 3 },
+    { "id": "cust_kent_east", "name": "Kent East Hill Residential", "lat": 47.3821, "lon": -122.1956, "demand_units": 3400, "service_sla_minutes": 45, "priority": 1 },
+    { "id": "cust_kent_valley", "name": "Kent Station Commercial", "lat": 47.3811, "lon": -122.2321, "demand_units": 3000, "service_sla_minutes": 40, "priority": 2 },
+    { "id": "cust_auburn_dt", "name": "Auburn Center & SuperMall", "lat": 47.3089, "lon": -122.2312, "demand_units": 2600, "service_sla_minutes": 45, "priority": 1 },
+    { "id": "cust_fed_way", "name": "Federal Way Town Center", "lat": 47.3142, "lon": -122.3112, "demand_units": 2800, "service_sla_minutes": 45, "priority": 1 },
+    { "id": "cust_tac_dt", "name": "Tacoma Downtown & Broadway", "lat": 47.2529, "lon": -122.4443, "demand_units": 3900, "service_sla_minutes": 45, "priority": 2 },
+    { "id": "cust_tac_general", "name": "Tacoma General Healthcare Precinct", "lat": 47.2589, "lon": -122.4512, "demand_units": 2900, "service_sla_minutes": 30, "priority": 3 },
+    { "id": "cust_tac_south", "name": "Tacoma South Mall & Pacific", "lat": 47.2023, "lon": -122.4689, "demand_units": 2500, "service_sla_minutes": 50, "priority": 1 },
+    { "id": "cust_puyallup", "name": "Puyallup Fairgrounds & South Hill", "lat": 47.1912, "lon": -122.2989, "demand_units": 2700, "service_sla_minutes": 50, "priority": 1 },
+    { "id": "cust_lakewood", "name": "Lakewood Towne Center & Base West", "lat": 47.1721, "lon": -122.5189, "demand_units": 2400, "service_sla_minutes": 55, "priority": 1 },
+    { "id": "cust_tukwila_southcenter", "name": "Westfield Southcenter Mall", "lat": 47.4589, "lon": -122.2598, "demand_units": 3800, "service_sla_minutes": 40, "priority": 2 },
+    { "id": "cust_burien", "name": "Burien & Highline Hospital", "lat": 47.4712, "lon": -122.3412, "demand_units": 2200, "service_sla_minutes": 45, "priority": 2 },
+    { "id": "cust_issaquah", "name": "Issaquah Highlands Gateway", "lat": 47.5389, "lon": -122.0356, "demand_units": 2500, "service_sla_minutes": 55, "priority": 1 },
+    { "id": "cust_sammamish", "name": "Sammamish Plateau Suburb", "lat": 47.6162, "lon": -122.0354, "demand_units": 2100, "service_sla_minutes": 60, "priority": 1 },
+    { "id": "cust_bothell_dt", "name": "Bothell Main Street & Biotech", "lat": 47.7601, "lon": -122.2056, "demand_units": 2600, "service_sla_minutes": 50, "priority": 2 },
+    { "id": "cust_woodinville_center", "name": "Woodinville Commercial Hub", "lat": 47.7534, "lon": -122.1589, "demand_units": 1800, "service_sla_minutes": 55, "priority": 1 },
+    { "id": "cust_lynnwood_mall", "name": "Alderwood Regional Mall", "lat": 47.8309, "lon": -122.2712, "demand_units": 3400, "service_sla_minutes": 45, "priority": 2 },
+    { "id": "cust_edmonds", "name": "Edmonds Ferry & Bowl", "lat": 47.8107, "lon": -122.3774, "demand_units": 1900, "service_sla_minutes": 55, "priority": 1 },
+    { "id": "cust_shoreline", "name": "Shoreline North City Hub", "lat": 47.7562, "lon": -122.3456, "demand_units": 2300, "service_sla_minutes": 50, "priority": 1 },
+    { "id": "cust_everett_dt", "name": "Everett CBD & Naval Station", "lat": 47.9789, "lon": -122.2089, "demand_units": 3600, "service_sla_minutes": 50, "priority": 2 },
+    { "id": "cust_everett_providence", "name": "Providence Regional Hospital", "lat": 47.9912, "lon": -122.1956, "demand_units": 2800, "service_sla_minutes": 35, "priority": 3 }
+  ],
+  "hazard_zones": [
+    {
+      "hazard_id": "flood_green_river_valley",
+      "hazard_type": "FloodZone",
+      "severity": "High",
+      "description": "Green River Basin 100-Year Flood Inundation Corridor",
+      "coordinates": [
+        [
+          [47.345, -122.250],
+          [47.435, -122.260],
+          [47.440, -122.225],
+          [47.350, -122.210],
+          [47.345, -122.250]
+        ]
+      ]
+    },
+    {
+      "hazard_id": "flood_puyallup_delta",
+      "hazard_type": "FloodZone",
+      "severity": "Severe",
+      "description": "Puyallup River Confluence & Tidal Inundation Zone",
+      "coordinates": [
+        [
+          [47.220, -122.420],
+          [47.265, -122.430],
+          [47.270, -122.370],
+          [47.215, -122.360],
+          [47.220, -122.420]
+        ]
+      ]
+    },
+    {
+      "hazard_id": "flood_duwamish_surge",
+      "hazard_type": "FloodZone",
+      "severity": "Moderate",
+      "description": "Duwamish Waterway Storm Surge Risk Area",
+      "coordinates": [
+        [
+          [47.530, -122.350],
+          [47.585, -122.365],
+          [47.580, -122.325],
+          [47.525, -122.320],
+          [47.530, -122.350]
+        ]
+      ]
+    }
+  ]
+}
