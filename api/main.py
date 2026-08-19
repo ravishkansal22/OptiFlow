@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 from typing import Dict, Any, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, BackgroundTasks
@@ -15,6 +16,8 @@ from schemas.mireye import ProvenanceTag
 from agents.controller_agent import ControllerAgent
 from agents.mireye_gateway_agent import MireyeGatewayAgent
 from api.ws import ws_manager
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="OptiFlow API",
@@ -58,8 +61,14 @@ def trace_broadcaster(event: AgentTraceEvent):
                 "type": "agent_trace",
                 "event": event.model_dump()
             }))
-    except Exception:
-        pass
+    except Exception as exc:
+        # Broadcast failed (e.g. no running event loop, stale task) — do not crash the
+        # callback. The trace event is already appended to the in-memory state; this
+        # failure only means a connected frontend client may miss a push update.
+        logger.warning(
+            "trace_broadcaster: failed to schedule WebSocket broadcast: %s: %s",
+            type(exc).__name__, exc
+        )
 
 
 controller = ControllerAgent(gateway=mireye_gateway, event_callback=trace_broadcaster)

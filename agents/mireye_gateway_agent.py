@@ -1,4 +1,5 @@
 import os
+import logging
 import time
 import json
 import hashlib
@@ -19,6 +20,8 @@ from schemas.mireye import (
 
 # Base32 characters for Geohash encoding
 GEOHASH_BASE32 = "0123456789bcdefghjkmnpqrstuvwxyz"
+
+logger = logging.getLogger(__name__)
 
 
 def encode_geohash(lat: float, lon: float, precision: int = 7) -> str:
@@ -124,16 +127,25 @@ class MireyeGatewayAgent:
                 cached_val = self.redis_client.get(key)
                 if cached_val:
                     return json.loads(cached_val)
-            except Exception:
-                pass
+            except Exception as exc:
+                # Redis read failed — fall through to in-memory cache. This is
+                # non-fatal but should be visible so connection issues are caught early.
+                logger.warning(
+                    "Redis read failed for key '%s': %s: %s",
+                    key, type(exc).__name__, exc
+                )
         return self.memory_cache.get(key)
 
     def _write_cache(self, key: str, value: Dict[str, Any], ttl_seconds: int = 86400):
         if self.redis_client:
             try:
                 self.redis_client.setex(key, ttl_seconds, json.dumps(value))
-            except Exception:
-                pass
+            except Exception as exc:
+                # Redis write failed — value is still stored in memory_cache below.
+                logger.warning(
+                    "Redis write failed for key '%s': %s: %s",
+                    key, type(exc).__name__, exc
+                )
         self.memory_cache[key] = value
 
     async def get_terrain_elevation(self, lat: float, lon: float, known_base: Optional[Dict[str, Any]] = None) -> MireyeTerrainResponse:
@@ -169,9 +181,20 @@ class MireyeGatewayAgent:
                         raw["provenance"] = prov
                         self._write_cache(cache_key, raw)
                         return MireyeTerrainResponse(**raw)
-            except Exception:
-                pass
+            except Exception as exc:
+                # Live Mireye API call failed — falling back to mock data.
+                # MIREYE_MOCK_MODE: replace this block with real API error handling
+                # once live integration is enabled (see: MIREYE_API_KEY env var).
+                logger.warning(
+                    "Live Mireye terrain API call failed for (lat=%.4f, lon=%.4f): %s: %s — "
+                    "falling back to MIREYE_MOCK_MODE simulation data.",
+                    lat, lon, type(exc).__name__, exc
+                )
 
+        # --- MIREYE_MOCK_MODE: High-Fidelity Local Geospatial Simulation ---
+        # This block runs whenever no real API key is configured OR the live call above fails.
+        # Integration point: when wiring in the real Mireye API, remove or gate this block
+        # behind a MIREYE_MOCK_MODE=true env flag and ensure the live path above handles all cases.
         # High-Fidelity Local Mireye Geospatial Model Fallback
         elev = known_base.get("base_elevation_m", 25.0) if known_base else 25.0 + math.sin(lat * 50) * 15
         slope = known_base.get("base_slope_pct", 1.5) if known_base else abs(math.cos(lon * 40) * 4)
