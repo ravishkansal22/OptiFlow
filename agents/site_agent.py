@@ -484,3 +484,304 @@ class SiteGenerationAgent:
         ))
 
         return candidates, trace_events
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# MOCK HARNESS — run the Site Agent standalone, no Mireye API / server needed
+#
+#     python -m agents.site_agent                  # full scenario sweep
+#     python -m agents.site_agent --scenario pass  # one scenario
+#     python -m agents.site_agent --json           # machine-readable output
+#
+# Every scenario prints the INPUT seed and the OUTPUT candidate + trace event
+# side by side, so you can eyeball that screening actually works.
+# ═══════════════════════════════════════════════════════════════════════════
+
+import json as _json
+import asyncio as _asyncio
+import argparse as _argparse
+from datetime import datetime as _dt, timezone as _tz
+
+from schemas.mireye import (
+    MireyeTerrainResponse as _Terrain,
+    MireyeLandCoverResponse as _LandCover,
+)
+
+
+def _mock_provenance(endpoint: str, **params: Any) -> ProvenanceTag:
+    """A real ProvenanceTag flagged as mock, so downstream schema validation passes."""
+    return ProvenanceTag(
+        endpoint=endpoint,
+        params={"mock": True, **params},
+        timestamp=_dt.now(_tz.utc).isoformat(),
+        response_hash="mock-" + str(abs(hash((endpoint, tuple(sorted(params.items()))))))[:12],
+        cached=False,
+        latency_ms=0.0,
+    )
+
+
+class MockMireyeGateway:
+    """
+    Drop-in stand-in for MireyeGatewayAgent, satisfying only the two methods
+    SiteGenerationAgent actually calls:
+
+        await get_terrain_elevation(lat, lon, known_base=...)  -> MireyeTerrainResponse
+        await get_land_cover_buildings(lat, lon, radius_m=..., known_base=...)
+                                                              -> MireyeLandCoverResponse
+
+    Values are read from the seed dict itself (`known_base`) when present, so a
+    test can dictate exactly what terrain the agent "sees":
+
+        {"id": "X", "lat": 47.4, "lon": -122.2,
+         "mock_slope_pct": 12.0, "mock_parcel_sqm": 5000, "mock_is_occupied": True}
+
+    Failure injection:
+        MockMireyeGateway(fail_terrain=True)     -> terrain call raises
+        MockMireyeGateway(fail_land_cover=True)  -> land-cover call raises
+    """
+
+    # Defaults used when the seed does not override them — a clean, passing site.
+    DEFAULTS = {
+        "slope_pct": 2.0,
+        "elevation_m": 45.0,
+        "primary_land_cover": "Industrial",
+        "available_parcel_sqm": 60_000.0,
+        "is_occupied": False,
+    }
+
+    def __init__(self, fail_terrain: bool = False, fail_land_cover: bool = False,
+                 overrides: Optional[Dict[str, Any]] = None):
+        self.fail_terrain = fail_terrain
+        self.fail_land_cover = fail_land_cover
+        self.overrides = overrides or {}
+        self.calls: List[Dict[str, Any]] = []   # inspectable call log
+
+    def _value(self, key: str, seed: Optional[Dict[str, Any]]) -> Any:
+        if seed and f"mock_{key}" in seed:
+            return seed[f"mock_{key}"]
+        if key in self.overrides:
+            return self.overrides[key]
+        return self.DEFAULTS[key]
+
+    async def get_terrain_elevation(self, lat: float, lon: float,
+                                    known_base: Optional[Dict[str, Any]] = None) -> _Terrain:
+        self.calls.append({"method": "get_terrain_elevation", "lat": lat, "lon": lon})
+        if self.fail_terrain:
+            raise ConnectionError("MOCK: Mireye terrain endpoint unreachable")
+
+        slope_pct = float(self._value("slope_pct", known_base))
+        return _Terrain(
+            lat=lat,
+            lon=lon,
+            elevation_m=float(self._value("elevation_m", known_base)),
+            slope_degrees=round(slope_pct * 0.573, 3),
+            slope_pct=slope_pct,
+            aspect="Flat" if slope_pct < 3 else "NE",
+            buildability_score=round(max(0.0, 1.0 - slope_pct / 20.0), 3),
+            provenance=_mock_provenance("/v1/fetch", lat=lat, lon=lon, layer="terrain"),
+        )
+
+    async def get_land_cover_buildings(self, lat: float, lon: float, radius_m: float = 500.0,
+                                       known_base: Optional[Dict[str, Any]] = None) -> _LandCover:
+        self.calls.append({"method": "get_land_cover_buildings", "lat": lat,
+                           "lon": lon, "radius_m": radius_m})
+        if self.fail_land_cover:
+            raise ConnectionError("MOCK: Mireye land-cover endpoint unreachable")
+
+        cover = str(self._value("primary_land_cover", known_base))
+        parcel = float(self._value("available_parcel_sqm", known_base))
+        return _LandCover(
+            lat=lat,
+            lon=lon,
+            radius_m=radius_m,
+            primary_land_cover=cover,
+            is_industrial_zoned=cover.lower() in ("industrial", "commercial"),
+            building_footprint_sqm=max(0.0, 80_000.0 - parcel),
+            available_parcel_sqm=parcel,
+            is_occupied=bool(self._value("is_occupied", known_base)),
+            provenance=_mock_provenance("/v1/geospatial/land-cover-parcels",
+                                        lat=lat, lon=lon, radius_m=radius_m),
+        )
+
+
+# ── Scenario catalogue: (name, seeds, gateway kwargs, what we expect) ───────
+MOCK_SCENARIOS: Dict[str, Dict[str, Any]] = {
+    "pass": {
+        "why": "Flat, low, large industrial parcel — should ACCEPT with high confidence.",
+        "seeds": [{"id": "WH-A", "name": "Warehouse Alpha", "lat": 47.41, "lon": -122.24}],
+        "gateway": {},
+        "expect_passed": [True],
+    },
+    "slope": {
+        "why": "Slope 12% vs 8% limit — should REJECT on slope.",
+        "seeds": [{"id": "WH-B", "name": "Hillside Site", "lat": 47.50, "lon": -122.30,
+                   "mock_slope_pct": 12.0}],
+        "gateway": {},
+        "expect_passed": [False],
+    },
+    "elevation": {
+        "why": "Elevation 400m vs 250m limit — should REJECT on freight access.",
+        "seeds": [{"id": "WH-C", "name": "Mountain Site", "lat": 47.60, "lon": -121.90,
+                   "mock_elevation_m": 400.0}],
+        "gateway": {},
+        "expect_passed": [False],
+    },
+    "occupied": {
+        "why": "Parcel already occupied / conservation zoned — should REJECT.",
+        "seeds": [{"id": "WH-D", "name": "Wetland Reserve", "lat": 47.30, "lon": -122.40,
+                   "mock_is_occupied": True, "mock_primary_land_cover": "Wetland"}],
+        "gateway": {},
+        "expect_passed": [False],
+    },
+    "small_parcel": {
+        "why": "Parcel 5,000 sqm vs 25,000 minimum — should REJECT on size.",
+        "seeds": [{"id": "WH-E", "name": "Cramped Lot", "lat": 47.45, "lon": -122.20,
+                   "mock_available_parcel_sqm": 5_000.0}],
+        "gateway": {},
+        "expect_passed": [False],
+    },
+    "marginal": {
+        "why": "Slope 7.9% (just under the 8% limit) — ACCEPT but with reduced confidence.",
+        "seeds": [{"id": "WH-F", "name": "Marginal Grade", "lat": 47.44, "lon": -122.22,
+                   "mock_slope_pct": 7.9}],
+        "gateway": {},
+        "expect_passed": [True],
+    },
+    "partial_outage": {
+        "why": "Terrain call fails, land cover OK — degraded data, confidence penalised.",
+        "seeds": [{"id": "WH-G", "name": "Partial Data Site", "lat": 47.42, "lon": -122.26}],
+        "gateway": {"fail_terrain": True},
+        "expect_passed": [True],
+    },
+    "full_outage": {
+        "why": "Both Mireye calls fail — must REJECT (never silently pass an unscreened site).",
+        "seeds": [{"id": "WH-H", "name": "Blind Site", "lat": 47.43, "lon": -122.27}],
+        "gateway": {"fail_terrain": True, "fail_land_cover": True},
+        "expect_passed": [False],
+    },
+    "bad_input": {
+        "why": "Missing lat/lon, out-of-range lon, and a non-dict entry — validate, warn, never crash.",
+        "seeds": [
+            {"id": "WH-I", "name": "No Coordinates"},
+            {"id": "WH-J", "name": "Bad Longitude", "lat": 47.4, "lon": 999.0},
+            "this-is-not-a-dict",
+        ],
+        "gateway": {},
+        "expect_passed": [True, True],
+    },
+}
+
+
+async def run_mock_scenario(name: str, as_json: bool = False) -> bool:
+    """
+    Run one named scenario end-to-end against MockMireyeGateway and print the
+    INPUT seeds next to the OUTPUT candidates + reasoning.
+
+    Returns True if every candidate's passed_screening matched `expect_passed`.
+    """
+    spec = MOCK_SCENARIOS[name]
+    gateway = MockMireyeGateway(**spec["gateway"])
+    agent = SiteGenerationAgent(gateway, config=spec.get("config"))
+    state: NetworkState = {}  # NetworkState is a TypedDict; this agent reads nothing from it
+
+    candidates, events = await agent.execute(state, spec["seeds"])
+
+    screened = [e for e in events if e.action == "CandidateScreened"]
+    actual = [c.passed_screening for c in candidates]
+    ok = actual == spec["expect_passed"]
+
+    if as_json:
+        print(_json.dumps({
+            "scenario": name,
+            "why": spec["why"],
+            "input_seeds": spec["seeds"],
+            "gateway_calls": gateway.calls,
+            "output_candidates": [
+                {
+                    "id": c.id, "name": c.name, "lat": c.lat, "lon": c.lon,
+                    "slope_pct": c.terrain_slope_pct, "elevation_m": c.elevation_m,
+                    "land_cover": c.land_cover, "parcel_sqm": c.parcel_area_sqm,
+                    "is_occupied": c.is_occupied,
+                    "passed_screening": c.passed_screening,
+                    "rejection_reasons": c.rejection_reasons,
+                    "provenance_keys": sorted(c.provenance.keys()),
+                }
+                for c in candidates
+            ],
+            "confidence_scores": [e.details.get("confidence_score") for e in screened],
+            "reasoning": [e.details.get("reasoning") for e in screened],
+            "expected_passed": spec["expect_passed"],
+            "actual_passed": actual,
+            "result": "OK" if ok else "MISMATCH",
+        }, indent=2, default=str))
+        return ok
+
+    print("\n" + "=" * 78)
+    print(f"SCENARIO: {name}")
+    print(f"  {spec['why']}")
+    print("=" * 78)
+
+    print("\n-- INPUT (seeds handed to agent.execute) --")
+    for s in spec["seeds"]:
+        print(f"   {s!r}")
+    print(f"   gateway: MockMireyeGateway({', '.join(f'{k}={v}' for k, v in spec['gateway'].items()) or 'defaults'})")
+
+    print(f"\n-- MIREYE CALLS MADE ({len(gateway.calls)}) --")
+    for call in gateway.calls:
+        print(f"   {call}")
+
+    print(f"\n-- OUTPUT ({len(candidates)} candidate(s), {len(events)} trace event(s)) --")
+    for c, ev in zip(candidates, screened):
+        verdict = "PASS" if c.passed_screening else "REJECT"
+        print(f"\n   [{verdict}] {c.id} — {c.name}  @ ({c.lat}, {c.lon})")
+        print(f"      slope={c.terrain_slope_pct}%  elev={c.elevation_m}m  "
+              f"parcel={c.parcel_area_sqm:,.0f} sqm  cover={c.land_cover}  occupied={c.is_occupied}")
+        print(f"      confidence={ev.details.get('confidence_score')}  "
+              f"upstream_degraded={ev.details.get('upstream_degraded')}")
+        print(f"      provenance={sorted(c.provenance.keys()) or 'none (mireye unavailable)'}")
+        if c.rejection_reasons:
+            for r in c.rejection_reasons:
+                print(f"      reject: {r}")
+        print(f"      reasoning: {ev.details.get('reasoning')}")
+
+    print(f"\n-- CHECK --  expected passed={spec['expect_passed']}  actual={actual}  "
+          f"→ {'OK' if ok else 'MISMATCH'}")
+    return ok
+
+
+async def run_all_mock_scenarios(as_json: bool = False) -> int:
+    results = {}
+    for name in MOCK_SCENARIOS:
+        results[name] = await run_mock_scenario(name, as_json=as_json)
+    failures = [n for n, ok in results.items() if not ok]
+    if not as_json:
+        print("\n" + "=" * 78)
+        print(f"SUMMARY: {len(results) - len(failures)}/{len(results)} scenarios behaved as expected.")
+        for n, ok in results.items():
+            print(f"   {'OK    ' if ok else 'FAILED'}  {n}")
+        print("=" * 78)
+    return 1 if failures else 0
+
+
+def _mock_main(argv: Optional[List[str]] = None) -> int:
+    parser = _argparse.ArgumentParser(
+        description="Run SiteGenerationAgent against a mock Mireye gateway (no API key needed)."
+    )
+    parser.add_argument("--scenario", choices=sorted(MOCK_SCENARIOS), default=None,
+                        help="Run a single scenario (default: run all).")
+    parser.add_argument("--json", action="store_true", help="Machine-readable JSON output.")
+    parser.add_argument("--log-level", default="WARNING",
+                        help="Agent log level: DEBUG, INFO, WARNING (default WARNING).")
+    args = parser.parse_args(argv)
+
+    logging.basicConfig(level=args.log_level.upper(),
+                        format="%(levelname)s %(name)s: %(message)s")
+
+    if args.scenario:
+        ok = _asyncio.run(run_mock_scenario(args.scenario, as_json=args.json))
+        return 0 if ok else 1
+    return _asyncio.run(run_all_mock_scenarios(as_json=args.json))
+
+
+if __name__ == "__main__":
+    raise SystemExit(_mock_main())
