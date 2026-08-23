@@ -117,6 +117,13 @@ class NetworkSolution(BaseModel):
     is_baseline_cost_only: bool = False
     rank: int = 1
     description: str = ""
+    unmet_demand_pct: float = 0.0  # % of total customer demand left unassigned to any
+    # warehouse because approved facility capacity was insufficient to cover it. 0.0
+    # means every customer was fully assigned. A customer contributing to this is left
+    # OUT of customer_assignments (not assigned to a facility that can't actually serve
+    # them), so critic_agent's existing "unassigned customer" check surfaces it as a
+    # constraint violation for visibility rather than the pipeline silently reporting
+    # 100% coverage that wasn't real.
 
 
 class Disruption(BaseModel):

@@ -20,6 +20,16 @@ class OptimizationAgent:
     then evaluates a multi-objective Pareto Frontier (Cost vs. Resilience) via NSGA-II / Pareto search.
     """
 
+    # Internal-only objective penalty for each unit of customer demand the MILP
+    # leaves unassigned to any warehouse. This is NOT added to the solution's
+    # reported total_fixed_cost/total_transport_cost/total_cost (those stay a
+    # true accounting of what was actually opened and routed) — it only biases
+    # the solver so it maximizes coverage before it ever "chooses" to leave
+    # demand unserved. It must dominate the per-customer routing/SLA cost
+    # coefficients set below (tens to low thousands of dollars), which it does
+    # by a wide margin for any realistic demand_units value.
+    UNMET_DEMAND_PENALTY_PER_UNIT = 200.0
+
     def __init__(self):
         self.name = "Optimization Agent"
 
@@ -67,6 +77,19 @@ class OptimizationAgent:
             for j, wh in enumerate(active_warehouses):
                 z[k, j] = solver.NumVar(0.0, solver.infinity(), f"z_{sup.id}_{wh.id}")
 
+        # u[i]: fraction of customer i's demand the network leaves UNSERVED.
+        # Without this, constraint 1 below would require 100% of every
+        # customer's demand to be covered, which is infeasible whenever the
+        # active warehouses' combined capacity is short of total demand (a
+        # real possibility once real Mireye screening rejects most candidate
+        # sites) — the solver would then return NO solution at all rather
+        # than the best achievable partial-coverage network. u[i] lets the
+        # model always stay feasible (as long as >=1 warehouse is active)
+        # and instead report the shortfall via unmet_demand_pct.
+        u = {}
+        for i, cust in enumerate(graph.customers):
+            u[i] = solver.NumVar(0.0, 1.0, f"u_{cust.id}")
+
         # Fast lookup edge costs
         wh_cust_costs = {}
         wh_cust_times = {}
@@ -75,9 +98,13 @@ class OptimizationAgent:
                 wh_cust_costs[(edge.source_id, edge.target_id)] = edge.transport_cost_usd
                 wh_cust_times[(edge.source_id, edge.target_id)] = edge.travel_time_min
 
-        # 1. Customer Demand Satisfaction: sum_j x[i, j] == 1
+        # 1. Customer Demand Satisfaction (soft): sum_j x[i, j] + u[i] == 1
+        # u[i] absorbs whatever fraction can't be covered instead of making
+        # the whole model infeasible — see the u[] comment above.
         for i, cust in enumerate(graph.customers):
-            solver.Add(solver.Sum([x[i, j] for j in range(len(active_warehouses))]) == 1)
+            solver.Add(
+                solver.Sum([x[i, j] for j in range(len(active_warehouses))]) + u[i] == 1
+            )
 
         # 2. Warehouse Capacity & Linking: sum_i demand[i] * x[i, j] <= capacity[j] * y[j]
         for j, wh in enumerate(active_warehouses):
@@ -136,6 +163,11 @@ class OptimizationAgent:
 
                 objective.SetCoefficient(x[i, j], edge_cost + sla_penalty)
 
+            # Heavily penalize leaving this customer's demand unserved so the
+            # solver only does it when actually forced to by a capacity
+            # shortfall, never as a "cheaper" routing choice.
+            objective.SetCoefficient(u[i], self.UNMET_DEMAND_PENALTY_PER_UNIT * cust.demand_units)
+
         objective.SetMinimization()
 
         # Solve with 5s time limit
@@ -152,10 +184,25 @@ class OptimizationAgent:
             if y[j].solution_value() > 0.5
         ]
 
+        # A customer is only recorded as "assigned" if some warehouse is
+        # actually serving a meaningful share of their demand. When capacity
+        # is short, u[i] absorbs the rest (see constraint 1 above) and that
+        # customer is left OUT of customer_assignments entirely rather than
+        # pinned to whichever warehouse happened to have the largest (still
+        # near-zero) fraction — an unassigned customer is exactly what
+        # critic_agent's existing "unassigned customer" check is built to
+        # flag, so the shortfall stays visible instead of being reported as
+        # full coverage that didn't actually happen.
+        MEANINGFUL_SERVICE_THRESHOLD = 1e-4
         customer_assignments = {}
         for i, cust in enumerate(graph.customers):
             best_j = max(range(len(active_warehouses)), key=lambda j: x[i, j].solution_value())
-            customer_assignments[cust.id] = active_warehouses[best_j].id
+            if x[i, best_j].solution_value() > MEANINGFUL_SERVICE_THRESHOLD:
+                customer_assignments[cust.id] = active_warehouses[best_j].id
+
+        total_demand_units = sum(c.demand_units for c in graph.customers)
+        unmet_demand_units = sum(u[i].solution_value() * cust.demand_units for i, cust in enumerate(graph.customers))
+        unmet_demand_pct = round((unmet_demand_units / total_demand_units) * 100.0, 1) if total_demand_units > 0 else 0.0
 
         flows = []
         supplier_assignments = {}
@@ -178,19 +225,29 @@ class OptimizationAgent:
             next(w.fixed_operating_cost for w in active_warehouses if w.id == wid)
             for wid in selected_wh_ids
         )
+        # Only customers actually assigned to a warehouse incur a transport
+        # cost / count toward SLA adherence — an unmet customer has no route
+        # to cost out and no SLA to have met.
         total_transport = sum(
             wh_cust_costs.get((customer_assignments[c.id], c.id), 250.0)
-            for c in graph.customers
+            for c in graph.customers if c.id in customer_assignments
         ) + sum(f.cost_usd for f in flows)
-        
+
         total_cost = round(total_fixed + total_transport, 2)
 
-        # Calculate SLA adherence and Resilience Score
+        # Calculate SLA adherence and Resilience Score. The denominator stays
+        # the FULL customer count (not just assigned ones): an unmet customer
+        # has no service at all, which is strictly worse than "assigned but
+        # late", so it must count against demand_retained_pct exactly like a
+        # missed SLA would — otherwise a network that only covers 60% of
+        # customers but serves that 60% on time would misreport 100% demand
+        # retained.
+        assigned_customers = [c for c in graph.customers if c.id in customer_assignments]
         sla_met_count = sum(
-            1 for c in graph.customers
+            1 for c in assigned_customers
             if wh_cust_times.get((customer_assignments[c.id], c.id), 45.0) <= c.service_sla_minutes
         )
-        demand_retained_pct = round((sla_met_count / len(graph.customers)) * 100.0, 1)
+        demand_retained_pct = round((sla_met_count / len(graph.customers)) * 100.0, 1) if graph.customers else 0.0
 
         # Normalized recovery cost estimation based on redundancy and flood resilience
         avg_wh_risk = np.mean([
@@ -216,6 +273,7 @@ class OptimizationAgent:
             demand_retained_pct=demand_retained_pct,
             normalized_recovery_cost=norm_recovery_cost,
             resilience_score=resilience,
+            unmet_demand_pct=unmet_demand_pct,
             is_baseline_cost_only=(resilience_bias == 0.0)
         )
 
@@ -223,9 +281,10 @@ class OptimizationAgent:
         self,
         graph: LogisticsGraph,
         inputs: InputSpec
-    ) -> Tuple[List[NetworkSolution], NetworkSolution]:
+    ) -> Tuple[List[NetworkSolution], Optional[NetworkSolution]]:
         """
         Generates 20-50 Pareto-optimal configurations across the Cost vs. Resilience spectrum.
+        Returns tuple of (frontier list, baseline solution or None).
         """
         frontier: List[NetworkSolution] = []
         target_k = inputs.target_warehouses_to_open
@@ -247,19 +306,24 @@ class OptimizationAgent:
         for idx, bias in enumerate(biases):
             # Vary facility count between target_k and target_k + 1 to explore redundancy trade-offs
             k_val = target_k + (1 if idx % 3 == 0 else 0)
-            sol = self._solve_milp_instance(graph, target_k=k_val, resilience_bias=float(bias))
-            if sol:
-                combo_key = tuple(sorted(sol.selected_warehouse_ids))
-                if combo_key not in seen_combos:
-                    seen_combos.add(combo_key)
-                    sol.name = f"Pareto Frontier Option #{len(frontier) + 1} ({len(sol.selected_warehouse_ids)} Hubs)"
-                    sol.description = f"Balanced trade-off with resilience score {sol.resilience_score:.3f} and ${sol.total_cost:,.0f} budget."
-                    frontier.append(sol)
+            try:
+                sol = self._solve_milp_instance(graph, target_k=k_val, resilience_bias=float(bias))
+                if sol:
+                    combo_key = tuple(sorted(sol.selected_warehouse_ids))
+                    if combo_key not in seen_combos:
+                        seen_combos.add(combo_key)
+                        sol.name = f"Pareto Frontier Option #{len(frontier) + 1} ({len(sol.selected_warehouse_ids)} Hubs)"
+                        sol.description = f"Balanced trade-off with resilience score {sol.resilience_score:.3f} and ${sol.total_cost:,.0f} budget."
+                        frontier.append(sol)
+            except Exception as e:
+                # Log solver errors but continue trying other biases
+                pass
 
         # Sort frontier by Cost ascending
-        frontier.sort(key=lambda s: s.total_cost)
-        for rank, s in enumerate(frontier, 1):
-            s.rank = rank
+        if frontier:
+            frontier.sort(key=lambda s: s.total_cost)
+            for rank, s in enumerate(frontier, 1):
+                s.rank = rank
 
         # Ensure baseline is properly returned
         if not baseline_sol and frontier:
@@ -270,7 +334,7 @@ class OptimizationAgent:
 
     async def execute(self, graph: LogisticsGraph, inputs: InputSpec) -> Tuple[List[NetworkSolution], NetworkSolution, List[AgentTraceEvent]]:
         trace_events = []
-        
+
         start_event = AgentTraceEvent(
             event_id=str(uuid.uuid4()),
             agent_name=self.name,
@@ -285,6 +349,24 @@ class OptimizationAgent:
 
         # Pick best balanced solution on the frontier (middle-high resilience)
         best_balanced = min(frontier, key=lambda s: abs(s.resilience_score - 0.85)) if frontier else baseline
+
+        # Validate we have valid solutions before accessing attributes
+        if baseline is None or best_balanced is None:
+            trace_events.append(AgentTraceEvent(
+                event_id=str(uuid.uuid4()),
+                agent_name=self.name,
+                action="ParetoOptimization",
+                status="error",
+                message=f"Pareto Frontier generation failed: frontier has {len(frontier)} solutions but no valid baseline or balanced solution.",
+                details={
+                    "frontier_count": len(frontier),
+                    "baseline_valid": baseline is not None,
+                    "best_balanced_valid": best_balanced is not None
+                },
+                timestamp=""
+            ))
+            # Return empty frontier and None for best_balanced to signal failure upstream
+            return frontier, best_balanced, trace_events
 
         trace_events.append(AgentTraceEvent(
             event_id=str(uuid.uuid4()),

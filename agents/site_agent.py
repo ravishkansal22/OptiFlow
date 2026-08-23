@@ -266,6 +266,36 @@ class SiteGenerationAgent:
             timestamp="",
         ))
 
+        # ── Pre-warm Mireye cache for the whole batch ────────────────────────
+        # ONE (or a handful of) POST /v1/fetch/batch call(s) covers terrain +
+        # land-cover + flood-hazard fields for every candidate at once
+        # (<=25 sites/call), instead of 2 API calls per candidate here
+        # (get_terrain_elevation + get_land_cover_buildings) plus 1 more per
+        # candidate later in RiskAgent (get_flood_hazard). This keeps the
+        # whole pipeline's live Mireye call count low and predictable
+        # regardless of candidate count. The per-candidate loop below is
+        # completely UNCHANGED — it just becomes cache hits; if the batch
+        # pre-fetch fails for any reason, it falls straight back to the
+        # original per-candidate call pattern with no loss of correctness.
+        try:
+            valid_seeds = [s for s in raw_candidate_seeds if isinstance(s, dict)]
+            bundle_sites = [
+                (seed.get("id", ""), *_validate_seed(seed, cfg)[:2])
+                for seed in valid_seeds
+            ]
+            await self.gateway.get_site_bundle_batch(
+                bundle_sites,
+                known_bases={s.get("id", ""): s for s in valid_seeds},
+                land_cover_radius_m=cfg.land_cover_radius_m,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[%s] Batched site-bundle pre-fetch failed (%s: %s) — "
+                "continuing with per-candidate Mireye calls below (higher "
+                "call count, same correctness).",
+                self.name, type(exc).__name__, exc,
+            )
+
         for seed in raw_candidate_seeds:
             if not isinstance(seed, dict):
                 logger.warning(

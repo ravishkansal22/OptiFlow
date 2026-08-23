@@ -31,12 +31,12 @@ class NarratorAgent:
         candidates: List[Candidate],
         graph: LogisticsGraph,
         frontier: List[NetworkSolution],
-        active_solution: NetworkSolution,
+        active_solution: Optional[NetworkSolution],
         disruption: Optional[Disruption] = None,
         critic_report: Optional[CriticReport] = None
     ) -> Tuple[str, List[AgentTraceEvent]]:
         trace_events = []
-        
+
         start_event = AgentTraceEvent(
             event_id=str(uuid.uuid4()),
             agent_name=self.name,
@@ -49,8 +49,29 @@ class NarratorAgent:
 
         passed_cands = [c for c in candidates if c.passed_screening]
         rejected_cands = [c for c in candidates if not c.passed_screening]
+
+        # ── Handle case where no candidates passed screening / optimization failed ──
+        if active_solution is None:
+            sections = []
+            sections.append(f"### 🌐 Screening Report — {inputs_region}")
+            sections.append(
+                f"OptiFlow evaluated **{len(candidates)} candidate logistics sites** across the corridor using live Mireye terrain, land-cover, and flood hazard telemetry. "
+                f"**No sites passed buildability and environmental screening** ({len(rejected_cands)} rejected due to slope, zoning, or flood exposure constraints). "
+                f"Network optimization cannot proceed without qualified candidates."
+            )
+            narrative_text = "\n".join(sections)
+            trace_events.append(AgentTraceEvent(
+                event_id=str(uuid.uuid4()),
+                agent_name=self.name,
+                action="GenerateNarrative",
+                status="warning",
+                message="No qualified candidates available; narrative cannot be generated.",
+                timestamp=""
+            ))
+            return narrative_text, trace_events
+
         selected_whs = [w for w in graph.warehouses if w.id in active_solution.selected_warehouse_ids]
-        
+
         # Calculate baseline comparisons
         baseline = next((s for s in frontier if s.is_baseline_cost_only), active_solution)
         cost_diff = active_solution.total_cost - baseline.total_cost
@@ -72,6 +93,14 @@ class NarratorAgent:
             f"- **Resilience Score:** `{active_solution.resilience_score:.3f}` ({active_solution.demand_retained_pct}% customer demand fulfilled within SLA)\n"
             f"- **Pareto Frontier Position:** Rank #{active_solution.rank} of {len(frontier)} non-dominated trade-off points."
         )
+
+        if active_solution.unmet_demand_pct > 0:
+            sections.append(
+                f"\n⚠️ **Capacity Shortfall:** the {len(selected_whs)} approved facilities cannot cover "
+                f"`{active_solution.unmet_demand_pct}%` of total customer demand — that demand has NO assigned "
+                f"warehouse in this configuration. Approve additional qualified sites or raise facility capacity "
+                f"to close this gap; see the Critic Audit below for the specific unassigned customers."
+            )
 
         if not active_solution.is_baseline_cost_only and cost_diff > 0:
             sections.append(
@@ -115,12 +144,20 @@ class NarratorAgent:
         candidates: List[Candidate],
         graph: LogisticsGraph,
         frontier: List[NetworkSolution],
-        active_solution: NetworkSolution
+        active_solution: Optional[NetworkSolution]
     ) -> Dict[str, Any]:
         """
         Answers free-form what-if questions by querying structured state fields and Mireye provenance.
         """
         q_lower = query.lower()
+
+        # ── Handle case where optimization failed ──
+        if active_solution is None:
+            return {
+                "answer": f"Unable to answer '{query}' — no valid network solution available. "
+                           f"All {len(candidates)} candidate sites were rejected during environmental screening. "
+                           f"Please review rejection reasons and adjust input parameters."
+            }
 
         # 1. Why wasn't a candidate selected / rejected?
         for cand in candidates:

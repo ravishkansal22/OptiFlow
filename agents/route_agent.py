@@ -67,6 +67,124 @@ class RouteGraphBuilderAgent:
         self.config = config or RouteConfig()
         self.name = "Route / Graph Builder Agent"
 
+    @staticmethod
+    def _chunk_destinations(n_origins: int, destinations: List, max_pairs: int = 3500, max_dim: int = 500) -> List[List]:
+        """
+        Splits a destination list into chunks so each (origins x chunk) matrix
+        stays inside Mireye's /v1/proximity per-request caps (<=500 per side,
+        <=3,500 pairs — see get_routing_matrix's docstring). For OptiFlow's
+        normal dataset sizes this returns a single chunk (one API call).
+        """
+        if n_origins == 0 or not destinations:
+            return []
+        chunk_size = max(1, min(max_dim, max_pairs // max(1, n_origins)))
+        return [destinations[i:i + chunk_size] for i in range(0, len(destinations), chunk_size)]
+
+    def _haversine_edge(
+        self, edge_id: str, source_id: str, origin: List[float], target_id: str, dest: List[float], error: str
+    ) -> LogisticsEdge:
+        """Builds a degraded-mode edge from straight-line distance when Mireye can't resolve a pair."""
+        cfg = self.config
+        straight_line_km = _haversine_distance(origin[0], origin[1], dest[0], dest[1])
+        dist_adjusted_km = straight_line_km * cfg.circuitry_factor
+        time_min = (dist_adjusted_km / cfg.fallback_speed_kmh) * 60.0
+        cost_usd = dist_adjusted_km * cfg.fallback_cost_per_km
+
+        prov = {
+            "endpoint": "fallback/haversine",
+            "params": {"origin": origin, "destination": dest},
+            "timestamp": "1970-01-01T00:00:00Z",
+            "response_hash": "fallback",
+            "cached": False,
+            "latency_ms": 0.0,
+            "upstream_degraded": True,
+            "fallback_method": "haversine",
+            "error": error
+        }
+
+        return LogisticsEdge(
+            id=edge_id,
+            source_id=source_id,
+            target_id=target_id,
+            distance_km=round(dist_adjusted_km, 2),
+            travel_time_min=round(time_min, 2),
+            transport_cost_usd=round(cost_usd, 2),
+            route_risk_score=cfg.fallback_route_risk,
+            status="active",
+            provenance=prov
+        )
+
+    async def _resolve_edges_batch(
+        self,
+        sources: List[Tuple[str, List[float]]],
+        targets: List[Tuple[str, List[float]]],
+    ) -> Tuple[List[LogisticsEdge], int]:
+        """
+        Resolves every (source -> target) edge for one direction (e.g. all
+        suppliers -> all warehouses) using as few /v1/proximity calls as
+        possible: one batched get_routing_matrix() call per destination
+        chunk, instead of one call per pair. Pairs Mireye can't resolve (or
+        chunks where the whole call fails) fall back to a Haversine estimate,
+        same as before.
+        """
+        edges: List[LogisticsEdge] = []
+        degraded = 0
+        if not sources or not targets:
+            return edges, degraded
+
+        cfg = self.config
+        source_ids = [s[0] for s in sources]
+        source_pts = [s[1] for s in sources]
+        chunks = self._chunk_destinations(len(source_pts), targets)
+        sem = asyncio.Semaphore(max(1, cfg.max_concurrency))
+
+        async def _fetch_chunk(dest_chunk: List[Tuple[str, List[float]]]):
+            dest_ids = [t[0] for t in dest_chunk]
+            dest_pts = [t[1] for t in dest_chunk]
+            async with sem:
+                try:
+                    matrix = await self.gateway.get_routing_matrix(source_pts, dest_pts, mode=cfg.routing_mode)
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] Batched routing matrix call failed for %d origins x %d destinations (%s). "
+                        "Using Haversine fallback for this chunk.",
+                        self.name, len(source_pts), len(dest_pts), exc
+                    )
+                    matrix = [None] * (len(source_pts) * len(dest_pts))
+
+            chunk_edges = []
+            chunk_degraded = 0
+            for oi, (src_id, origin) in enumerate(zip(source_ids, source_pts)):
+                for di, (tgt_id, dest) in enumerate(zip(dest_ids, dest_pts)):
+                    idx = oi * len(dest_pts) + di
+                    routing = matrix[idx] if idx < len(matrix) else None
+                    edge_id = f"edge_{src_id}_to_{tgt_id}"
+                    if routing is not None:
+                        chunk_edges.append(LogisticsEdge(
+                            id=edge_id,
+                            source_id=src_id,
+                            target_id=tgt_id,
+                            distance_km=routing.distance_km,
+                            travel_time_min=routing.duration_minutes,
+                            transport_cost_usd=routing.fuel_cost_usd,
+                            route_risk_score=routing.route_risk_score,
+                            status="active",
+                            provenance=routing.provenance
+                        ))
+                    else:
+                        chunk_edges.append(self._haversine_edge(
+                            edge_id, src_id, origin, tgt_id, dest,
+                            error="pair unresolved or batch call failed"
+                        ))
+                        chunk_degraded += 1
+            return chunk_edges, chunk_degraded
+
+        results = await asyncio.gather(*[_fetch_chunk(chunk) for chunk in chunks])
+        for chunk_edges, chunk_degraded in results:
+            edges.extend(chunk_edges)
+            degraded += chunk_degraded
+        return edges, degraded
+
     async def execute(
         self,
         suppliers_raw: List[Dict[str, Any]],
@@ -129,86 +247,27 @@ class RouteGraphBuilderAgent:
             )
             hazards = []
 
-        # 3. Concurrent Batched Routing Queries
-        edges: List[LogisticsEdge] = []
-        degraded_edges_count = 0
-        
-        sem = asyncio.Semaphore(self.config.max_concurrency)
+        # 3. Batched Routing Queries
+        #
+        # Each direction (Supplier->Warehouse, Warehouse->Customer) is fetched
+        # as ONE /v1/proximity distance-matrix call covering every pair at
+        # once (chunked only if the matrix exceeds Mireye's per-request
+        # limits), instead of one API call per O-D pair. For this pipeline's
+        # typical sizes (a handful of suppliers/warehouses, a few dozen
+        # customers) that means 2 API calls total to build the whole graph,
+        # rather than len(suppliers)*len(warehouses) + len(warehouses)*len(customers).
         cfg = self.config
 
-        async def _resolve_edge(source_id: str, origin: List[float], target_id: str, dest: List[float]) -> Tuple[LogisticsEdge, bool]:
-            edge_id = f"edge_{source_id}_to_{target_id}"
-            async with sem:
-                try:
-                    routing = await self.gateway.get_routing(
-                        origin=origin,
-                        destination=dest,
-                        mode=cfg.routing_mode
-                    )
-                    edge = LogisticsEdge(
-                        id=edge_id,
-                        source_id=source_id,
-                        target_id=target_id,
-                        distance_km=routing.distance_km,
-                        travel_time_min=routing.duration_minutes,
-                        transport_cost_usd=routing.fuel_cost_usd,
-                        route_risk_score=routing.route_risk_score,
-                        status="active",
-                        provenance=routing.provenance
-                    )
-                    return edge, False
-                except Exception as exc:
-                    logger.warning(
-                        "[%s] Routing failed for %s -> %s (%s). Using Haversine fallback.",
-                        self.name, source_id, target_id, exc
-                    )
-                    
-                    # Haversine fallback
-                    straight_line_km = _haversine_distance(origin[0], origin[1], dest[0], dest[1])
-                    dist_adjusted_km = straight_line_km * cfg.circuitry_factor
-                    time_min = (dist_adjusted_km / cfg.fallback_speed_kmh) * 60.0
-                    cost_usd = dist_adjusted_km * cfg.fallback_cost_per_km
-                    
-                    prov = {
-                        "endpoint": "fallback/haversine",
-                        "params": {"origin": origin, "destination": dest},
-                        "timestamp": "1970-01-01T00:00:00Z",
-                        "response_hash": "fallback",
-                        "cached": False,
-                        "latency_ms": 0.0,
-                        "upstream_degraded": True,
-                        "fallback_method": "haversine",
-                        "error": str(exc)
-                    }
-                    
-                    edge = LogisticsEdge(
-                        id=edge_id,
-                        source_id=source_id,
-                        target_id=target_id,
-                        distance_km=round(dist_adjusted_km, 2),
-                        travel_time_min=round(time_min, 2),
-                        transport_cost_usd=round(cost_usd, 2),
-                        route_risk_score=cfg.fallback_route_risk,
-                        status="active",
-                        provenance=prov
-                    )
-                    return edge, True
-
-        tasks = []
-        # (a) Supplier -> Warehouse Edges
-        for sup in suppliers:
-            for wh in warehouses:
-                tasks.append(_resolve_edge(sup.id, [sup.lat, sup.lon], wh.id, [wh.lat, wh.lon]))
-                
-        # (b) Warehouse -> Customer Edges
-        for wh in warehouses:
-            for cust in customers:
-                tasks.append(_resolve_edge(wh.id, [wh.lat, wh.lon], cust.id, [cust.lat, cust.lon]))
-
-        if tasks:
-            results = await asyncio.gather(*tasks)
-            edges = [res[0] for res in results]
-            degraded_edges_count = sum(1 for res in results if res[1])
+        sup_wh_edges, sup_wh_degraded = await self._resolve_edges_batch(
+            [(sup.id, [sup.lat, sup.lon]) for sup in suppliers],
+            [(wh.id, [wh.lat, wh.lon]) for wh in warehouses],
+        )
+        wh_cust_edges, wh_cust_degraded = await self._resolve_edges_batch(
+            [(wh.id, [wh.lat, wh.lon]) for wh in warehouses],
+            [(cust.id, [cust.lat, cust.lon]) for cust in customers],
+        )
+        edges = sup_wh_edges + wh_cust_edges
+        degraded_edges_count = sup_wh_degraded + wh_cust_degraded
 
         graph = LogisticsGraph(
             suppliers=suppliers,

@@ -131,6 +131,19 @@ class MireyeGatewayAgent:
         "elevation", "slope_degrees", "aspect_cardinal",
         "coast_distance_m", "soil_drainage_class", "bedrock_depth_cm",
     )
+
+    # Fraction of a parcel's total area that must be covered by an existing
+    # building footprint before OptiFlow treats the parcel as "occupied"
+    # (no room to build). Real Mireye parcel_area_m2 / primary_building_
+    # footprint_sqm values come from ANY existing structure of record at a
+    # queried point — for real industrial-park candidates this is almost
+    # always > 0 sqm (there's already SOME building somewhere on a working
+    # industrial site), so treating any nonzero footprint as "fully
+    # occupied, reject" caused every real candidate in a developed corridor
+    # to fail screening even when most of the parcel was open/buildable.
+    # A ratio-based check reserves "occupied" for parcels with little to no
+    # remaining buildable land.
+    OCCUPANCY_FOOTPRINT_RATIO_THRESHOLD = 0.85
  
     def __init__(
         self,
@@ -184,6 +197,29 @@ class MireyeGatewayAgent:
         MireyeGatewayAgent._validate_lat_lon(max_lat, max_lon)
         if min_lat > max_lat or min_lon > max_lon:
             raise ValueError(f"bounding_box corners are inverted: {bounding_box}")
+
+    @staticmethod
+    def _locator(lat: float, lon: float) -> str:
+        """
+        Builds a Mireye "locator" string for /v1/proximity.
+        Per docs.mireye.ai/api-reference/proximity, origins/destinations must
+        each be a "lat,lng" STRING (or a full street address) — never a
+        [lat, lon] array and never a bare place name. Sending arrays there is
+        a schema violation and is the root cause of the 422 invalid_request
+        errors this endpoint was returning.
+        """
+        return f"{lat:.6f},{lon:.6f}"
+
+    @staticmethod
+    def _to_mireye_travel_mode(internal_mode: str) -> str:
+        """
+        /v1/proximity's "distance" op only accepts mode="driving" or
+        "straightline" (docs.mireye.ai/api-reference/proximity) — Mireye has
+        no vehicle-class concept. OptiFlow's own "heavy_truck" / "light_truck"
+        / "car" labels are used only for internal freight-cost modeling and
+        must never be sent to Mireye verbatim (another 422 cause).
+        """
+        return "straightline" if internal_mode == "straightline" else "driving"
  
     # ------------------------------------------------------------------ #
     # Cache internals — payloads stored in cache NEVER contain provenance
@@ -467,21 +503,29 @@ class MireyeGatewayAgent:
  
     async def get_routing(self, origin: List[float], destination: List[float], mode: str = "heavy_truck") -> MireyeRoutingResponse:
         """
-        Retrieves real road transit distance, travel time, and logistics route hazard score.
-        Uses POST /v1/proximity with "op": "distance" (not the deprecated /v1/routing/accessibility endpoint).
+        Retrieves real road transit distance, travel time, and logistics route hazard score
+        for a SINGLE origin -> destination pair.
+
+        Uses POST /v1/proximity with "op": "distance" (not the deprecated
+        /v1/routing/accessibility endpoint). For querying many pairs at once,
+        prefer get_routing_matrix() — it costs one API call for an entire
+        N x M matrix instead of one call per pair.
         """
         self._validate_lat_lon(origin[0], origin[1])
         self._validate_lat_lon(destination[0], destination[1])
         start_time = time.perf_counter()
         cache_key = self._get_od_cache_key(origin, destination, mode)
         params = {"origin": origin, "destination": destination, "mode": mode}
-        # Real Mireye request: POST /v1/proximity with "op": "distance"
-        # origin/destination are [lat, lon] pairs; Mireye /v1/proximity expects them as arrays
+        # Real Mireye request (docs.mireye.ai/api-reference/proximity): POST
+        # /v1/proximity, op="distance". origins/destinations are arrays of
+        # "lat,lng" LOCATOR STRINGS (never [lat, lon] arrays, never bare place
+        # names), and mode is restricted to "driving" | "straightline" (no
+        # vehicle classes) — both of these were wrong before and caused 422s.
         live_body = {
             "op": "distance",
-            "origins": [[origin[0], origin[1]]],
-            "destinations": [[destination[0], destination[1]]],
-            "mode": mode  # "heavy_truck", "light_truck", "car", etc.
+            "origins": [self._locator(origin[0], origin[1])],
+            "destinations": [self._locator(destination[0], destination[1])],
+            "mode": self._to_mireye_travel_mode(mode),
         }
         return await self._execute(
             MireyeRoutingResponse, "routing", params, cache_key,
@@ -491,7 +535,267 @@ class MireyeGatewayAgent:
             live_body=live_body,
             response_mapper=lambda raw: self._map_routing_proximity_response(raw, origin, destination, mode),
         )
+
+    async def get_routing_matrix(
+        self,
+        origins: List[List[float]],
+        destinations: List[List[float]],
+        mode: str = "heavy_truck",
+    ) -> List[Optional[MireyeRoutingResponse]]:
+        """
+        Batched O-D distance/time lookup: fetches the ENTIRE origins x
+        destinations matrix in a single POST /v1/proximity (op="distance")
+        request, instead of one request per pair. This is how OptiFlow keeps
+        its total /v1/proximity call count low regardless of network size.
+
+        Mireye's documented limits for the "distance" op
+        (docs.mireye.ai/api-reference/proximity) are:
+          - <= 500 origins, <= 500 destinations
+          - <= 10,000 origin x destination pairs per request
+          - <= 3,500 driving-calc budget share per request
+        This method enforces the tighter 3,500-pair cap itself (raises
+        ValueError) — callers with a larger matrix must chunk before calling
+        (see route_agent.py's _chunk_destinations / _resolve_edges_batch).
+
+        Returns a flat list of length len(origins) * len(destinations),
+        indexed as [origin_idx * len(destinations) + destination_idx]. An
+        entry is None when that specific pair could not be resolved (e.g.
+        Mireye flagged it "unreachable_or_snapped") or when the whole batch
+        call failed/was unavailable — the caller is expected to fall back
+        (e.g. to a Haversine estimate) for None entries.
+        """
+        if not origins or not destinations:
+            return []
+        if len(origins) > 500 or len(destinations) > 500 or len(origins) * len(destinations) > 3500:
+            raise ValueError(
+                f"get_routing_matrix: {len(origins)}x{len(destinations)} matrix exceeds Mireye's "
+                f"per-request limits (<=500 origins, <=500 destinations, <=3500 pairs/request); "
+                f"chunk the request before calling."
+            )
+        for o in origins:
+            self._validate_lat_lon(o[0], o[1])
+        for d in destinations:
+            self._validate_lat_lon(d[0], d[1])
+
+        n_dest = len(destinations)
+        results: List[Optional[MireyeRoutingResponse]] = [None] * (len(origins) * n_dest)
+
+        # Serve whatever pairs are already cached from a prior single-pair or
+        # batched call, and only ask Mireye for the ones still missing.
+        pending_idx: List[int] = []
+        for oi, origin in enumerate(origins):
+            for di, dest in enumerate(destinations):
+                idx = oi * n_dest + di
+                cache_key = self._get_od_cache_key(origin, dest, mode)
+                cached = self._read_cache(cache_key)
+                if isinstance(cached, dict):
+                    prov = self._create_provenance_tag(
+                        self.ENDPOINTS["routing"], {"origin_index": oi, "destination_index": di},
+                        cached, cached=True, latency_ms=0.0
+                    )
+                    results[idx] = MireyeRoutingResponse(**cached, provenance=prov)
+                else:
+                    pending_idx.append(idx)
+
+        if not pending_idx:
+            return results
+
+        start_time = time.perf_counter()
+        params = {"origins": len(origins), "destinations": len(destinations), "mode": mode}
+        live_body = {
+            "op": "distance",
+            "origins": [self._locator(o[0], o[1]) for o in origins],
+            "destinations": [self._locator(d[0], d[1]) for d in destinations],
+            "mode": self._to_mireye_travel_mode(mode),
+        }
+
+        raw: Optional[Dict[str, Any]] = None
+        if self._is_live_mode():
+            raw = await self._request_live(self.ENDPOINTS["routing"], params, method="POST", json_body=live_body)
+
+        if raw is not None:
+            legs = raw.get("legs")
+            if isinstance(legs, list):
+                latency_ms = (time.perf_counter() - start_time) * 1000
+                per_leg_latency = latency_ms / max(1, len(legs))
+                for leg in legs:
+                    oi, di = leg.get("origin_index"), leg.get("destination_index")
+                    if not isinstance(oi, int) or not isinstance(di, int):
+                        continue
+                    if not (0 <= oi < len(origins)) or not (0 <= di < n_dest):
+                        continue
+                    if leg.get("flag"):  # e.g. "unreachable_or_snapped" — caller falls back
+                        continue
+                    try:
+                        mapped = self._map_routing_proximity_leg(leg, origins[oi], destinations[di])
+                    except (KeyError, TypeError, ValueError) as exc:
+                        logger.warning(
+                            "Mireye /v1/proximity leg [%d,%d] could not be mapped (%s) — leaving for fallback.",
+                            oi, di, exc
+                        )
+                        continue
+                    idx = oi * n_dest + di
+                    prov = self._create_provenance_tag(
+                        self.ENDPOINTS["routing"], {"origin_index": oi, "destination_index": di},
+                        mapped, cached=False, latency_ms=per_leg_latency
+                    )
+                    results[idx] = MireyeRoutingResponse(**mapped, provenance=prov)
+                    self._write_cache(self._get_od_cache_key(origins[oi], destinations[di], mode), mapped)
+            else:
+                logger.warning(
+                    "Mireye /v1/proximity matrix response missing 'legs' array — "
+                    "falling back to local simulation for the unresolved pairs."
+                )
+
+        # Any pair still unresolved at this point — no API key configured
+        # (mock mode), the live call failed outright, Mireye flagged the pair
+        # "unreachable_or_snapped", or a single leg didn't map — falls back to
+        # the same local high-fidelity simulator get_routing() has always
+        # used, so mock-mode / degraded-mode behavior is unchanged by this
+        # batching change. (route_agent.py's own Haversine fallback is now
+        # reserved for a hard exception from this call, not routine misses.)
+        for idx in range(len(results)):
+            if results[idx] is not None:
+                continue
+            oi, di = divmod(idx, n_dest)
+            sim = self._simulate_routing(origins[oi], destinations[di], mode)
+            prov = self._create_provenance_tag(
+                self.ENDPOINTS["routing"], {"origin_index": oi, "destination_index": di},
+                sim, cached=False, latency_ms=0.0
+            )
+            results[idx] = MireyeRoutingResponse(**sim, provenance=prov)
+
+        return results
  
+    async def get_site_bundle_batch(
+        self,
+        sites: List[Tuple[str, float, float]],
+        known_bases: Optional[Dict[str, Dict[str, Any]]] = None,
+        land_cover_radius_m: float = 500.0,
+    ) -> Dict[str, Dict[str, Optional[BaseModel]]]:
+        """
+        Pre-warms the terrain / land-cover / flood-hazard cache for MANY
+        sites using as few POST /v1/fetch/batch calls as possible (<=25
+        locations per call — docs.mireye.ai/api-reference/fetch-batch;
+        exceeding it is a 422), instead of get_terrain_elevation() +
+        get_land_cover_buildings() + get_flood_hazard() each making their
+        own single-point /v1/fetch call for every site (3 API calls x N
+        sites total, across SiteGenerationAgent and RiskAgent).
+
+        This is a pure optimization layer: it does not replace those three
+        methods or change their behavior/interfaces. It writes their exact
+        cache keys ahead of time so every one of their later per-site calls
+        is served from cache (cached=True, zero additional API calls)
+        instead of hitting the network. A no-op in mock mode (no live API
+        key) — there is no live call to save there, so per-site simulation
+        proceeds exactly as it did before this method existed.
+
+        Returns {site_id: {"terrain": MireyeTerrainResponse|None,
+                            "landcover": MireyeLandCoverResponse|None,
+                            "flood": MireyeFloodResponse|None}}. A None
+        value means that field could not be resolved from the batch (Mireye
+        marked the location ok=false, or a field failed to map) — the
+        caller's own subsequent per-site call handles that exactly as it
+        already did (retry live, or simulate).
+        """
+        known_bases = known_bases or {}
+        out: Dict[str, Dict[str, Any]] = {sid: {"terrain": None, "landcover": None, "flood": None} for sid, _, _ in sites}
+        if not sites or not self._is_live_mode():
+            return out
+
+        # Real Mireye field-catalog names needed across all three per-site
+        # calls: TERRAIN_PRESET_FIELDS (6) + land-cover's 4 fields + flood's
+        # 3 real fields (elevation_differential_m/flood_risk_index are
+        # OptiFlow-derived, not fetched — see _map_flood_fetch_response).
+        # 13 fields total, well under the documented 50-fields-per-request cap.
+        combined_fields = list(self.TERRAIN_PRESET_FIELDS) + [
+            "land_use_class", "parcel_zoning", "parcel_area_m2", "primary_building_footprint_sqm",
+            "flood_zone", "annual_flood_probability", "historical_flood_events",
+        ]
+
+        BATCH_LIMIT = 25
+        for start in range(0, len(sites), BATCH_LIMIT):
+            chunk = sites[start:start + BATCH_LIMIT]
+            try:
+                await self._fetch_site_bundle_chunk(chunk, land_cover_radius_m, combined_fields, out)
+            except Exception as exc:
+                logger.warning(
+                    "Mireye /v1/fetch/batch chunk of %d site(s) failed (%s: %s) — "
+                    "those sites' per-site calls will retry live / simulate as before.",
+                    len(chunk), type(exc).__name__, exc
+                )
+        return out
+
+    async def _fetch_site_bundle_chunk(
+        self,
+        chunk: List[Tuple[str, float, float]],
+        land_cover_radius_m: float,
+        combined_fields: List[str],
+        out: Dict[str, Dict[str, Any]],
+    ) -> None:
+        start_time = time.perf_counter()
+        params = {"count": len(chunk), "fields": combined_fields}
+        live_body = {
+            "locations": [{"lat": lat, "lng": lon} for _, lat, lon in chunk],
+            "fields": combined_fields,
+        }
+        raw = await self._request_live("/v1/fetch/batch", params, method="POST", json_body=live_body)
+        if raw is None:
+            return  # per-site calls will retry live (and simulate on failure), unchanged
+
+        results = raw.get("results")
+        if not isinstance(results, list):
+            logger.warning(
+                "Mireye /v1/fetch/batch response missing 'results' array — "
+                "skipping cache pre-warm for this chunk."
+            )
+            return
+
+        latency_ms = (time.perf_counter() - start_time) * 1000
+        per_site_latency = latency_ms / max(1, len(chunk))
+
+        for entry in results:
+            idx = entry.get("index")
+            if not isinstance(idx, int) or not (0 <= idx < len(chunk)):
+                continue
+            site_id, lat, lon = chunk[idx]
+            if not entry.get("ok", False):
+                continue  # this site's own per-site call will retry live / simulate, unchanged
+            location_raw = {"fields": entry.get("fields") or {}}
+
+            try:
+                terrain_mapped = self._map_terrain_fetch_response(location_raw, lat, lon)
+                prov = self._create_provenance_tag(
+                    self.ENDPOINTS["terrain"], {"lat": lat, "lon": lon}, terrain_mapped,
+                    cached=False, latency_ms=per_site_latency
+                )
+                out[site_id]["terrain"] = MireyeTerrainResponse(**terrain_mapped, provenance=prov)
+                self._write_cache(self._get_cache_key("terrain", lat, lon), terrain_mapped)
+            except (KeyError, TypeError, ValueError) as exc:
+                logger.warning("Batch terrain mapping failed for site '%s' (%s) — per-site call will retry.", site_id, exc)
+
+            try:
+                landcover_mapped = self._map_land_cover_fetch_response(location_raw, lat, lon, land_cover_radius_m)
+                prov = self._create_provenance_tag(
+                    self.ENDPOINTS["landcover"], {"lat": lat, "lon": lon, "radius_m": land_cover_radius_m},
+                    landcover_mapped, cached=False, latency_ms=per_site_latency
+                )
+                out[site_id]["landcover"] = MireyeLandCoverResponse(**landcover_mapped, provenance=prov)
+                self._write_cache(self._get_cache_key("landcover", lat, lon, land_cover_radius_m), landcover_mapped)
+            except (KeyError, TypeError, ValueError) as exc:
+                logger.warning("Batch land-cover mapping failed for site '%s' (%s) — per-site call will retry.", site_id, exc)
+
+            try:
+                flood_mapped = self._map_flood_fetch_response(location_raw, lat, lon)
+                prov = self._create_provenance_tag(
+                    self.ENDPOINTS["flood"], {"lat": lat, "lon": lon}, flood_mapped,
+                    cached=False, latency_ms=per_site_latency
+                )
+                out[site_id]["flood"] = MireyeFloodResponse(**flood_mapped, provenance=prov)
+                self._write_cache(self._get_cache_key("flood", lat, lon), flood_mapped)
+            except (KeyError, TypeError, ValueError) as exc:
+                logger.warning("Batch flood mapping failed for site '%s' (%s) — per-site call will retry.", site_id, exc)
+
     async def get_regional_hazards(self, region_name: str, bounding_box: List[float], known_hazards: Optional[List[Dict[str, Any]]] = None) -> MireyeHazardLayerResponse:
         """
         Retrieves flood hazard polygons and active road closures across the region.
@@ -509,11 +813,18 @@ class MireyeGatewayAgent:
         center_lat = (min_lat + max_lat) / 2
         center_lon = (min_lon + max_lon) / 2
 
-        # Real Mireye request: POST /v1/fetch at the center with hazard-related fields
+        # Real Mireye request: POST /v1/fetch at the center with hazard-related
+        # fields. Only "flood_zone" is a real Mireye field-catalog name here —
+        # "hazard_type" and "hazard_severity" are OptiFlow's own derived
+        # labels (see _map_hazards_fetch_response's defaults below), not
+        # things Mireye's /v1/fetch recognizes. Requesting an unrecognized
+        # field name isn't tolerated as a per-field "absent" status the way a
+        # valid-but-inapplicable field is — Mireye rejects the WHOLE request
+        # with HTTP 400, which is what was happening here before this fix.
         live_body = {
             "lat": center_lat,
             "lng": center_lon,
-            "fields": ["flood_zone", "hazard_type", "hazard_severity"]
+            "fields": ["flood_zone"]
         }
 
         return await self._execute(
@@ -584,8 +895,8 @@ class MireyeGatewayAgent:
             "buildability_score": round(buildability_score, 3),
         }
  
-    @staticmethod
-    def _map_land_cover_fetch_response(raw: Dict[str, Any], lat: float, lon: float, radius_m: float) -> Dict[str, Any]:
+    @classmethod
+    def _map_land_cover_fetch_response(cls, raw: Dict[str, Any], lat: float, lon: float, radius_m: float) -> Dict[str, Any]:
         """
         Translate a real POST /v1/fetch response (fields: land_use_class,
         parcel_zoning, parcel_area_m2, primary_building_footprint_sqm) into
@@ -597,8 +908,17 @@ class MireyeGatewayAgent:
         Two fields in MireyeLandCoverResponse have no direct Mireye
         equivalent and are DERIVED here, not sourced from the API:
           - is_occupied: Mireye exposes no occupancy flag. Proxied as
-            "a building footprint was recorded at this parcel" — treated as
-            occupied when primary_building_footprint_sqm > 0.
+            "existing building footprint covers most of the parcel" —
+            occupied when primary_building_footprint_sqm is at least
+            OCCUPANCY_FOOTPRINT_RATIO_THRESHOLD of parcel_area_m2. A real
+            industrial candidate almost always has SOME recorded footprint
+            somewhere on the parcel; a bare "footprint > 0 -> occupied"
+            check (the original version of this method) rejected nearly
+            every real-world candidate in a developed corridor for that
+            reason, even ones with large open, buildable land remaining.
+            available_parcel_sqm is the parcel area net of that existing
+            footprint, not zeroed outright, so a partially-built parcel with
+            room to spare can still pass the min-parcel-size screen.
           - is_industrial_zoned: derived from the parcel_zoning string via a
             substring check. Mireye's zoning-code taxonomy is not published
             in the public docs consulted here, so this heuristic is
@@ -634,9 +954,15 @@ class MireyeGatewayAgent:
         # not a failure — so it defaults to 0.0 rather than raising.
         building_footprint_sqm = float(_value("primary_building_footprint_sqm", required=False, default=0.0) or 0.0)
  
-        is_occupied = building_footprint_sqm > 0.0
+        # Occupancy is a RATIO check, not "any footprint at all". Real
+        # industrial-park parcels almost always have some existing structure
+        # of record; what matters for siting a NEW facility is whether
+        # enough open land remains, not whether the parcel is pristine.
+        footprint_ratio = (building_footprint_sqm / parcel_area_m2) if parcel_area_m2 > 0 else 1.0
+        is_occupied = footprint_ratio >= cls.OCCUPANCY_FOOTPRINT_RATIO_THRESHOLD
+        available_sqm = max(0.0, parcel_area_m2 - building_footprint_sqm)
         is_industrial_zoned = "ind" in parcel_zoning.lower()
- 
+
         return {
             "lat": lat,
             "lon": lon,
@@ -644,7 +970,7 @@ class MireyeGatewayAgent:
             "primary_land_cover": land_use_class,
             "is_industrial_zoned": is_industrial_zoned,
             "building_footprint_sqm": round(building_footprint_sqm, 2),
-            "available_parcel_sqm": 0.0 if is_occupied else round(parcel_area_m2, 2),
+            "available_parcel_sqm": 0.0 if is_occupied else round(available_sqm, 2),
             "is_occupied": is_occupied,
         }
  
@@ -701,59 +1027,60 @@ class MireyeGatewayAgent:
         }
 
     @staticmethod
-    def _map_routing_proximity_response(raw: Dict[str, Any], origin: List[float], destination: List[float], mode: str) -> Dict[str, Any]:
+    def _map_routing_proximity_leg(leg: Dict[str, Any], origin: List[float], destination: List[float]) -> Dict[str, Any]:
         """
-        Translate a real POST /v1/proximity (op="distance") response into the
-        flat shape MireyeRoutingResponse expects.
+        Translate ONE leg of a real POST /v1/proximity (op="distance") response
+        into the flat shape MireyeRoutingResponse expects.
 
-        Mireye's /v1/proximity distance operation returns a matrix of distances/times
-        between origins and destinations. With a single origin and single destination,
-        we extract the [0][0] element from the response matrix.
+        Per docs.mireye.ai/api-reference/proximity, the actual response shape is:
+        {
+          "paid_driving_calcs": int,
+          "notes": [...],
+          "legs": [
+            {"origin_index", "destination_index",
+             "distance_miles", "distance_km",
+             "duration_seconds", "duration_minutes",
+             "flag": null | "unreachable_or_snapped"},
+            ...
+          ],
+          "resolved_origins": [...], "resolved_destinations": [...]
+        }
+        (There is no top-level "distances"/"durations"/"routes" matrix —
+        that shape was never real and is what produced 422s / mapping errors.)
+        A leg with a non-null "flag" has no usable distance/duration and must
+        be treated as unresolved by the caller (fall back, don't guess).
         """
-        # Expected response structure from /v1/proximity distance operation:
-        # {
-        #   "distances": [[distance_km, ...], ...],
-        #   "durations": [[duration_minutes, ...], ...],
-        #   "routes": [[{...route_geojson...}, ...], ...],
-        #   ...
-        # }
-        distances = raw.get("distances")
-        durations = raw.get("durations")
-        routes = raw.get("routes")
+        if leg.get("flag"):
+            raise ValueError(f"leg unresolved/snapped: flag={leg.get('flag')!r}")
 
-        if not isinstance(distances, list) or not distances or not isinstance(distances[0], list):
-            raise ValueError("proximity distance response missing or malformed 'distances' matrix")
+        distance_km = leg.get("distance_km")
+        if distance_km is None:
+            raise ValueError("leg missing 'distance_km'")
+        distance_km = float(distance_km)
 
-        distance_km = float(distances[0][0])
-
-        duration_minutes = 0.0
-        if isinstance(durations, list) and durations and isinstance(durations[0], list):
-            duration_minutes = float(durations[0][0])
+        duration_minutes = leg.get("duration_minutes")
+        if duration_minutes is not None:
+            duration_minutes = float(duration_minutes)
         else:
-            # Compute duration from distance if not provided (assuming avg speed)
-            duration_minutes = (distance_km / 48.0) * 60.0 + 4.0
+            duration_seconds = leg.get("duration_seconds")
+            duration_minutes = (
+                float(duration_seconds) / 60.0 if duration_seconds is not None
+                else (distance_km / 48.0) * 60.0 + 4.0  # fallback estimate if Mireye omits duration
+            )
 
-        # Extract route geometry if available
-        route_geojson = None
-        if isinstance(routes, list) and routes and isinstance(routes[0], list) and routes[0]:
-            route_geojson = routes[0][0]
-
-        # Fallback geometry if not provided by API
-        if not route_geojson:
-            mid_lat = (origin[0] + destination[0]) / 2
-            mid_lon = (origin[1] + destination[1]) / 2
-            route_geojson = {
-                "type": "LineString",
-                "coordinates": [
-                    [origin[1], origin[0]],
-                    [mid_lon, mid_lat],
-                    [destination[1], destination[0]]
-                ]
-            }
-
-        # Compute route risk from location heuristics (same as simulator)
         mid_lat = (origin[0] + destination[0]) / 2
         mid_lon = (origin[1] + destination[1]) / 2
+        route_geojson = {
+            "type": "LineString",
+            "coordinates": [
+                [origin[1], origin[0]],
+                [mid_lon, mid_lat],
+                [destination[1], destination[0]]
+            ]
+        }
+
+        # Route risk from location heuristics (Mireye's distance op returns no
+        # hazard/risk field; this is OptiFlow's own derived score, same as simulator).
         route_risk = 0.15
         if 47.30 <= mid_lat <= 47.45 and -122.30 <= mid_lon <= -122.20:
             route_risk = 0.45
@@ -768,6 +1095,20 @@ class MireyeGatewayAgent:
             "route_risk_score": round(route_risk, 3),
             "geometry_geojson": route_geojson
         }
+
+    @staticmethod
+    def _map_routing_proximity_response(raw: Dict[str, Any], origin: List[float], destination: List[float], mode: str) -> Dict[str, Any]:
+        """
+        Translate a real single-pair POST /v1/proximity (op="distance")
+        response into the flat shape MireyeRoutingResponse expects. A
+        single-pair request still returns the "legs" array shape (with
+        exactly one leg); see _map_routing_proximity_leg for the field
+        reference this is built on.
+        """
+        legs = raw.get("legs")
+        if not isinstance(legs, list) or not legs:
+            raise ValueError("proximity distance response missing or empty 'legs' array")
+        return MireyeGatewayAgent._map_routing_proximity_leg(legs[0], origin, destination)
 
     @staticmethod
     def _map_hazards_fetch_response(raw: Dict[str, Any], region_name: str, bounding_box: List[float]) -> Dict[str, Any]:
