@@ -1,0 +1,83 @@
+OptiFlow Live Agent Test Report -- run 20260826T205520Z
+==============================================================================
+
+[0] Mireye API Connectivity Probe
+    Status:      SUCCESS   (0.0s)
+    How it works: Not one of the 10 agents -- a standalone preamble check that makes a direct HTTPS GET to the configured MIREYE_BASE_URL, independent of the Gateway's own retry/fallback logic, so DNS/network/auth problems are visible immediately instead of being silently absorbed later.
+    Output:      REACHABLE -- HTTP 404 in 490 ms
+
+[2] Mireye Gateway Agent
+    Status:      SUCCESS   (10.068s)
+    How it works: Owns all outbound Mireye traffic. Builds a cache key from (layer, geohash-7, radius); on a cache miss it either performs a live HTTPS call (implemented today ONLY for terrain-elevation) or falls back to a deterministic local geospatial simulation, then stamps every response with an immutable provenance tag (endpoint, params, SHA-256 response hash, cached flag, latency).
+    Output:      terrain elevation=6.33m slope=23.59%; land_cover=Barren or Impervious; flood_zone=Zone X500 (Wetland-Adjacent, Moderate Hazard); route=5.9km/9.0min; 2nd terrain call cached=True; live HTTP attempts this stage=1
+
+[3] Site Generation Agent
+    Status:      SUCCESS   (2.346s)
+    How it works: For each raw candidate site, calls the Gateway for terrain slope/elevation and land-cover/parcel data, then screens out sites with slope > 8%, elevation > 250m, protected/occupied zoning, or usable parcel area < 25,000 sqm.
+    Output:      0/3 passed site screening -> []; rejected -> {'cand_good_site': ['Slope exceeds buildable limit: 9.35% (Max: 8.0%)', 'Parcel occupied / protected conservation zoning: Trees'], 'cand_steep_slope': ['Parcel occupied / protected conservation zoning: Trees'], 'cand_flood_delta': ['Slope exceeds buildable limit: 23.59% (Max: 8.0%)']}
+
+[4] Risk Agent
+    Status:      SUCCESS   (0.0s)
+    How it works: For every site that survived site screening, calls the Gateway's flood-hazard endpoint and blends flood risk index (65%), historical flood-event frequency (20%) and terrain slope (15%) into a single 0-1 composite risk score; sites above 0.75 are rejected.
+    Output:      0/3 qualified after hazard scoring -> []
+
+[5] Route / Graph Builder Agent
+    Status:      SUCCESS   (0.001s)
+    How it works: Assembles supplier, warehouse and customer nodes, then batches an origin-destination Gateway routing call for every supplier->warehouse and warehouse->customer pair to attach real distance/time/cost/route-risk weights, plus regional hazard polygons.
+    Output:      2 suppliers, 0 warehouses, 4 customers, 0 weighted edges, 1 hazard polygons
+
+[6] Optimization Agent
+    Status:      ERROR   (0.0s)
+    How it works: Formulates facility-location + multi-commodity flow as a MILP (Google OR-Tools CBC) for a least-cost baseline, then re-solves across a resilience-bias sweep to build a non-dominated Cost-vs-Resilience Pareto frontier.
+    Output:      0 Pareto solutions; no feasible best-balanced solution found
+
+[7] Disaster Simulation Agent
+    Status:      SUCCESS   (0.0s)
+    How it works: Uses the graph's Mireye-derived flood-risk scores and node names to build a geographically grounded disruption scenario (flood, road closure, demand surge, or facility outage).
+    Output:      '100-Year Green River Valley Inundation' -> 0 warehouses, 0 edges affected
+
+[8] Recovery / Verification Agent
+    Status:      SKIPPED   (0.0s)
+    How it works: Marks disrupted warehouses/edges inactive, re-assigns only the customers cut off from a disabled facility to the nearest surviving open warehouse (re-querying the Gateway only for those delta routes), targeting a sub-60-second recovery re-solve.
+    Output:      Skipped: missing upstream inputs.
+
+[9] Critic Agent
+    Status:      SKIPPED   (0.0s)
+    How it works: Audits the final state before it reaches a user: verifies every candidate/edge carries a Mireye provenance tag, that no warehouse is over capacity, customers are only assigned to open facilities, and total cost is within budget.
+    Output:      Skipped: missing upstream inputs.
+
+[10] Reporting / Narrator Agent
+    Status:      SKIPPED   (0.0s)
+    How it works: Synthesizes candidates, graph, Pareto frontier, active solution, disruption and critic report into an executive narrative, and separately answers free-form what-if questions by matching the query against structured state fields.
+    Output:      Skipped: missing upstream inputs.
+
+[1] Controller / Supervisor Agent
+    Status:      ERROR   (3.531s)
+    How it works: Compiles all of the above into a compiled LangGraph StateGraph (site -> risk -> route -> optimize -> critic -> narrate) and exposes run_full_pipeline() and trigger_disruption() as the two top-level orchestration entry points.
+    Output:      Full pipeline run failed.
+    ERROR:       AttributeError: 'NoneType' object has no attribute 'total_cost'
+Traceback (most recent call last):
+  File "C:\Users\Lenovo\OneDrive\Documents\opti\OptiFlow\test_agents_with_mireye_api.py", line 684, in stage_controller
+    final_state = await controller.run_full_pipeline(inputs=MOCK_INPUTS)
+  File "C:\Users\Lenovo\OneDrive\Documents\opti\OptiFlow\agents\controller_agent.py", line 207, in run_full_pipeline
+    final_state = await self.graph.ainvoke(initial_state)
+  File "C:\Users\Lenovo\OneDrive\Documents\opti\OptiFlow\.venv\lib\site-packages\langgraph\pregel\main.py", line 4090, in ainvoke
+    async for chunk in self.astream(
+  File "C:\Users\Lenovo\OneDrive\Documents\opti\OptiFlow\.venv\lib\site-packages\langgraph\pregel\main.py", line 3440, in astream
+    async for _ in runner.atick(
+  File "C:\Users\Lenovo\OneDrive\Documents\opti\OptiFlow\.venv\lib\site-packages\langgraph\pregel\_runner.py", line 396, in atick
+    await arun_with_retry(
+  File "C:\Users\Lenovo\OneDrive\Documents\opti\OptiFlow\.venv\lib\site-packages\langgraph\pregel\_retry.py", line 744, in arun_with_retry
+    return await task.proc.ainvoke(task.input, config)
+  File "C:\Users\Lenovo\OneDrive\Documents\opti\OptiFlow\.venv\lib\site-packages\langgraph\_internal\_runnable.py", line 760, in ainvoke
+    input = await step.ainvoke(input, config, **kwargs)
+  File "C:\Users\Lenovo\OneDrive\Documents\opti\OptiFlow\.venv\lib\site-packages\langgraph\_internal\_runnable.py", line 522, in ainvoke
+    ret = await self.afunc(*args, **kwargs)
+  File "C:\Users\Lenovo\OneDrive\Documents\opti\OptiFlow\agents\controller_agent.py", line 153, in _node_narrator_reporting
+    narrative, events = self.narrator_agent.generate_narrative(
+  File "C:\Users\Lenovo\OneDrive\Documents\opti\OptiFlow\agents\narrator_agent.py", line 56, in generate_narrative
+    cost_diff = active_solution.total_cost - baseline.total_cost
+AttributeError: 'NoneType' object has no attribute 'total_cost'
+
+
+Summary: 6 succeeded, 2 errored, 3 skipped out of 11 stages.

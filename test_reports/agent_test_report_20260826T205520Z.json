@@ -1,0 +1,641 @@
+[
+  {
+    "agent_no": 0,
+    "agent_name": "Mireye API Connectivity Probe",
+    "description": "Not one of the 10 agents -- a standalone preamble check that makes a direct HTTPS GET to the configured MIREYE_BASE_URL, independent of the Gateway's own retry/fallback logic, so DNS/network/auth problems are visible immediately instead of being silently absorbed later.",
+    "status": "success",
+    "duration_s": 0.0,
+    "output_summary": "REACHABLE -- HTTP 404 in 490 ms",
+    "raw_output": null,
+    "error": null,
+    "timestamp": "2026-08-26T20:55:20.924397+00:00"
+  },
+  {
+    "agent_no": 2,
+    "agent_name": "Mireye Gateway Agent",
+    "description": "Owns all outbound Mireye traffic. Builds a cache key from (layer, geohash-7, radius); on a cache miss it either performs a live HTTPS call (implemented today ONLY for terrain-elevation) or falls back to a deterministic local geospatial simulation, then stamps every response with an immutable provenance tag (endpoint, params, SHA-256 response hash, cached flag, latency).",
+    "status": "success",
+    "duration_s": 10.068,
+    "output_summary": "terrain elevation=6.33m slope=23.59%; land_cover=Barren or Impervious; flood_zone=Zone X500 (Wetland-Adjacent, Moderate Hazard); route=5.9km/9.0min; 2nd terrain call cached=True; live HTTP attempts this stage=1",
+    "raw_output": {
+      "terrain": {
+        "lat": 47.24,
+        "lon": -122.4,
+        "elevation_m": 6.33,
+        "slope_degrees": 13.27,
+        "slope_pct": 23.59,
+        "aspect": "E",
+        "buildability_score": 0.0,
+        "provenance": {
+          "endpoint": "/v1/fetch",
+          "params": {
+            "lat": 47.24,
+            "lng": -122.4,
+            "preset": "terrain"
+          },
+          "timestamp": "2026-08-26T20:55:27.774609+00:00",
+          "response_hash": "c4bdb060bf03c9d4",
+          "cached": false,
+          "latency_ms": 1849.08
+        }
+      },
+      "land_cover": {
+        "lat": 47.24,
+        "lon": -122.4,
+        "radius_m": 500.0,
+        "primary_land_cover": "Barren or Impervious",
+        "is_industrial_zoned": true,
+        "building_footprint_sqm": 0.0,
+        "available_parcel_sqm": 66000.0,
+        "is_occupied": false,
+        "provenance": {
+          "endpoint": "/v1/fetch",
+          "params": {
+            "lat": 47.24,
+            "lng": -122.4,
+            "preset": "land_cover",
+            "fields": [
+              "primary_building_footprint_sqm",
+              "primary_building_overture_class"
+            ]
+          },
+          "timestamp": "2026-08-26T20:55:34.318386+00:00",
+          "response_hash": "265cbf54cc32872d",
+          "cached": false,
+          "latency_ms": 6542.9
+        }
+      },
+      "flood": {
+        "lat": 47.24,
+        "lon": -122.4,
+        "flood_zone": "Zone X500 (Wetland-Adjacent, Moderate Hazard)",
+        "annual_flood_probability": 0.004,
+        "elevation_differential_m": -3.67,
+        "historical_flood_events": 1,
+        "flood_risk_index": 0.4,
+        "provenance": {
+          "endpoint": "/v1/fetch",
+          "params": {
+            "lat": 47.24,
+            "lng": -122.4,
+            "preset": "flood_risk"
+          },
+          "timestamp": "2026-08-26T20:55:35.145229+00:00",
+          "response_hash": "5a611a59b03654ac",
+          "cached": false,
+          "latency_ms": 830.36
+        }
+      },
+      "routing": {
+        "origin": [
+          47.2725,
+          -122.4182
+        ],
+        "destination": [
+          47.24,
+          -122.4
+        ],
+        "distance_km": 5.9,
+        "duration_minutes": 9.0,
+        "toll_cost_usd": 0.0,
+        "fuel_cost_usd": 18.54,
+        "route_risk_score": 0.15,
+        "geometry_geojson": null,
+        "provenance": {
+          "endpoint": "/v1/proximity",
+          "params": {
+            "origin": [
+              47.2725,
+              -122.4182
+            ],
+            "destination": [
+              47.24,
+              -122.4
+            ],
+            "mode": "heavy_truck"
+          },
+          "timestamp": "2026-08-26T20:55:35.991382+00:00",
+          "response_hash": "88ece401a65086db",
+          "cached": false,
+          "latency_ms": 843.77
+        }
+      }
+    },
+    "error": null,
+    "timestamp": "2026-08-26T20:55:35.991382+00:00"
+  },
+  {
+    "agent_no": 3,
+    "agent_name": "Site Generation Agent",
+    "description": "For each raw candidate site, calls the Gateway for terrain slope/elevation and land-cover/parcel data, then screens out sites with slope > 8%, elevation > 250m, protected/occupied zoning, or usable parcel area < 25,000 sqm.",
+    "status": "success",
+    "duration_s": 2.346,
+    "output_summary": "0/3 passed site screening -> []; rejected -> {'cand_good_site': ['Slope exceeds buildable limit: 9.35% (Max: 8.0%)', 'Parcel occupied / protected conservation zoning: Trees'], 'cand_steep_slope': ['Parcel occupied / protected conservation zoning: Trees'], 'cand_flood_delta': ['Slope exceeds buildable limit: 23.59% (Max: 8.0%)']}",
+    "raw_output": [
+      {
+        "id": "cand_good_site",
+        "name": "North Auburn Distribution Park",
+        "lat": 47.35,
+        "lon": -122.28,
+        "demand_weight": 0.0,
+        "terrain_slope_pct": 9.35,
+        "elevation_m": 106.08,
+        "land_cover": "Trees",
+        "parcel_area_sqm": 0.0,
+        "is_occupied": true,
+        "flood_risk_score": 0.0,
+        "hazard_score": 0.0,
+        "composite_risk": 0.0,
+        "passed_screening": false,
+        "rejection_reasons": [
+          "Slope exceeds buildable limit: 9.35% (Max: 8.0%)",
+          "Parcel occupied / protected conservation zoning: Trees"
+        ],
+        "fixed_operating_cost": 130000.0,
+        "capacity_units": 25000.0,
+        "provenance": {
+          "terrain": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.35,
+              "lng": -122.28,
+              "preset": "terrain"
+            },
+            "timestamp": "2026-08-26T20:55:41.665093+00:00",
+            "response_hash": "35115a940bddde08",
+            "cached": false,
+            "latency_ms": 674.96
+          },
+          "land_cover": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.35,
+              "lng": -122.28,
+              "preset": "land_cover",
+              "fields": [
+                "primary_building_footprint_sqm",
+                "primary_building_overture_class"
+              ]
+            },
+            "timestamp": "2026-08-26T20:55:42.321959+00:00",
+            "response_hash": "885a97f42dcee1f9",
+            "cached": false,
+            "latency_ms": 657.67
+          }
+        }
+      },
+      {
+        "id": "cand_steep_slope",
+        "name": "Cascade Foothills Steep Site",
+        "lat": 47.55,
+        "lon": -122.05,
+        "demand_weight": 0.0,
+        "terrain_slope_pct": 3.98,
+        "elevation_m": 16.69,
+        "land_cover": "Trees",
+        "parcel_area_sqm": 0.0,
+        "is_occupied": true,
+        "flood_risk_score": 0.0,
+        "hazard_score": 0.0,
+        "composite_risk": 0.0,
+        "passed_screening": false,
+        "rejection_reasons": [
+          "Parcel occupied / protected conservation zoning: Trees"
+        ],
+        "fixed_operating_cost": 140000.0,
+        "capacity_units": 20000.0,
+        "provenance": {
+          "terrain": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.55,
+              "lng": -122.05,
+              "preset": "terrain"
+            },
+            "timestamp": "2026-08-26T20:55:42.843601+00:00",
+            "response_hash": "2c4bcdc22de0a469",
+            "cached": false,
+            "latency_ms": 527.79
+          },
+          "land_cover": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.55,
+              "lng": -122.05,
+              "preset": "land_cover",
+              "fields": [
+                "primary_building_footprint_sqm",
+                "primary_building_overture_class"
+              ]
+            },
+            "timestamp": "2026-08-26T20:55:43.340792+00:00",
+            "response_hash": "c1e671a0877e38d0",
+            "cached": false,
+            "latency_ms": 485.03
+          }
+        }
+      },
+      {
+        "id": "cand_flood_delta",
+        "name": "Duwamish Delta Logistics Site",
+        "lat": 47.24,
+        "lon": -122.4,
+        "demand_weight": 0.0,
+        "terrain_slope_pct": 23.59,
+        "elevation_m": 6.33,
+        "land_cover": "Barren or Impervious",
+        "parcel_area_sqm": 0.0,
+        "is_occupied": false,
+        "flood_risk_score": 0.0,
+        "hazard_score": 0.0,
+        "composite_risk": 0.0,
+        "passed_screening": false,
+        "rejection_reasons": [
+          "Slope exceeds buildable limit: 23.59% (Max: 8.0%)"
+        ],
+        "fixed_operating_cost": 118000.0,
+        "capacity_units": 21000.0,
+        "provenance": {
+          "terrain": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.24,
+              "lng": -122.4,
+              "preset": "terrain"
+            },
+            "timestamp": "2026-08-26T20:55:43.340792+00:00",
+            "response_hash": "c4bdb060bf03c9d4",
+            "cached": true,
+            "latency_ms": 0.01
+          },
+          "land_cover": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.24,
+              "lng": -122.4,
+              "preset": "land_cover",
+              "fields": [
+                "primary_building_footprint_sqm",
+                "primary_building_overture_class"
+              ]
+            },
+            "timestamp": "2026-08-26T20:55:43.340792+00:00",
+            "response_hash": "265cbf54cc32872d",
+            "cached": true,
+            "latency_ms": 0.01
+          }
+        }
+      }
+    ],
+    "error": null,
+    "timestamp": "2026-08-26T20:55:43.340792+00:00"
+  },
+  {
+    "agent_no": 4,
+    "agent_name": "Risk Agent",
+    "description": "For every site that survived site screening, calls the Gateway's flood-hazard endpoint and blends flood risk index (65%), historical flood-event frequency (20%) and terrain slope (15%) into a single 0-1 composite risk score; sites above 0.75 are rejected.",
+    "status": "success",
+    "duration_s": 0.0,
+    "output_summary": "0/3 qualified after hazard scoring -> []",
+    "raw_output": [
+      {
+        "id": "cand_good_site",
+        "name": "North Auburn Distribution Park",
+        "lat": 47.35,
+        "lon": -122.28,
+        "demand_weight": 0.0,
+        "terrain_slope_pct": 9.35,
+        "elevation_m": 106.08,
+        "land_cover": "Trees",
+        "parcel_area_sqm": 0.0,
+        "is_occupied": true,
+        "flood_risk_score": 0.0,
+        "hazard_score": 0.0,
+        "composite_risk": 0.0,
+        "passed_screening": false,
+        "rejection_reasons": [
+          "Slope exceeds buildable limit: 9.35% (Max: 8.0%)",
+          "Parcel occupied / protected conservation zoning: Trees"
+        ],
+        "fixed_operating_cost": 130000.0,
+        "capacity_units": 25000.0,
+        "provenance": {
+          "terrain": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.35,
+              "lng": -122.28,
+              "preset": "terrain"
+            },
+            "timestamp": "2026-08-26T20:55:41.665093+00:00",
+            "response_hash": "35115a940bddde08",
+            "cached": false,
+            "latency_ms": 674.96
+          },
+          "land_cover": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.35,
+              "lng": -122.28,
+              "preset": "land_cover",
+              "fields": [
+                "primary_building_footprint_sqm",
+                "primary_building_overture_class"
+              ]
+            },
+            "timestamp": "2026-08-26T20:55:42.321959+00:00",
+            "response_hash": "885a97f42dcee1f9",
+            "cached": false,
+            "latency_ms": 657.67
+          }
+        }
+      },
+      {
+        "id": "cand_steep_slope",
+        "name": "Cascade Foothills Steep Site",
+        "lat": 47.55,
+        "lon": -122.05,
+        "demand_weight": 0.0,
+        "terrain_slope_pct": 3.98,
+        "elevation_m": 16.69,
+        "land_cover": "Trees",
+        "parcel_area_sqm": 0.0,
+        "is_occupied": true,
+        "flood_risk_score": 0.0,
+        "hazard_score": 0.0,
+        "composite_risk": 0.0,
+        "passed_screening": false,
+        "rejection_reasons": [
+          "Parcel occupied / protected conservation zoning: Trees"
+        ],
+        "fixed_operating_cost": 140000.0,
+        "capacity_units": 20000.0,
+        "provenance": {
+          "terrain": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.55,
+              "lng": -122.05,
+              "preset": "terrain"
+            },
+            "timestamp": "2026-08-26T20:55:42.843601+00:00",
+            "response_hash": "2c4bcdc22de0a469",
+            "cached": false,
+            "latency_ms": 527.79
+          },
+          "land_cover": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.55,
+              "lng": -122.05,
+              "preset": "land_cover",
+              "fields": [
+                "primary_building_footprint_sqm",
+                "primary_building_overture_class"
+              ]
+            },
+            "timestamp": "2026-08-26T20:55:43.340792+00:00",
+            "response_hash": "c1e671a0877e38d0",
+            "cached": false,
+            "latency_ms": 485.03
+          }
+        }
+      },
+      {
+        "id": "cand_flood_delta",
+        "name": "Duwamish Delta Logistics Site",
+        "lat": 47.24,
+        "lon": -122.4,
+        "demand_weight": 0.0,
+        "terrain_slope_pct": 23.59,
+        "elevation_m": 6.33,
+        "land_cover": "Barren or Impervious",
+        "parcel_area_sqm": 0.0,
+        "is_occupied": false,
+        "flood_risk_score": 0.0,
+        "hazard_score": 0.0,
+        "composite_risk": 0.0,
+        "passed_screening": false,
+        "rejection_reasons": [
+          "Slope exceeds buildable limit: 23.59% (Max: 8.0%)"
+        ],
+        "fixed_operating_cost": 118000.0,
+        "capacity_units": 21000.0,
+        "provenance": {
+          "terrain": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.24,
+              "lng": -122.4,
+              "preset": "terrain"
+            },
+            "timestamp": "2026-08-26T20:55:43.340792+00:00",
+            "response_hash": "c4bdb060bf03c9d4",
+            "cached": true,
+            "latency_ms": 0.01
+          },
+          "land_cover": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.24,
+              "lng": -122.4,
+              "preset": "land_cover",
+              "fields": [
+                "primary_building_footprint_sqm",
+                "primary_building_overture_class"
+              ]
+            },
+            "timestamp": "2026-08-26T20:55:43.340792+00:00",
+            "response_hash": "265cbf54cc32872d",
+            "cached": true,
+            "latency_ms": 0.01
+          }
+        }
+      }
+    ],
+    "error": null,
+    "timestamp": "2026-08-26T20:55:48.345446+00:00"
+  },
+  {
+    "agent_no": 5,
+    "agent_name": "Route / Graph Builder Agent",
+    "description": "Assembles supplier, warehouse and customer nodes, then batches an origin-destination Gateway routing call for every supplier->warehouse and warehouse->customer pair to attach real distance/time/cost/route-risk weights, plus regional hazard polygons.",
+    "status": "success",
+    "duration_s": 0.001,
+    "output_summary": "2 suppliers, 0 warehouses, 4 customers, 0 weighted edges, 1 hazard polygons",
+    "raw_output": {
+      "suppliers": [
+        {
+          "id": "sup_portA",
+          "name": "Port A Intermodal Terminal",
+          "lat": 47.2725,
+          "lon": -122.4182,
+          "capacity_units": 40000.0,
+          "unit_supply_cost": 8.5
+        },
+        {
+          "id": "sup_hubB",
+          "name": "Rail Freight Hub B",
+          "lat": 47.3809,
+          "lon": -122.2348,
+          "capacity_units": 30000.0,
+          "unit_supply_cost": 8.0
+        }
+      ],
+      "warehouses": [],
+      "customers": [
+        {
+          "id": "cust_medical",
+          "name": "Downtown Medical District",
+          "lat": 47.6,
+          "lon": -122.33,
+          "demand_units": 4200.0,
+          "service_sla_minutes": 45.0,
+          "priority": 3
+        },
+        {
+          "id": "cust_tech",
+          "name": "Bellevue Tech Campus",
+          "lat": 47.61,
+          "lon": -122.2,
+          "demand_units": 5200.0,
+          "service_sla_minutes": 60.0,
+          "priority": 2
+        },
+        {
+          "id": "cust_urban",
+          "name": "Tacoma Urban Center",
+          "lat": 47.25,
+          "lon": -122.44,
+          "demand_units": 3600.0,
+          "service_sla_minutes": 50.0,
+          "priority": 2
+        },
+        {
+          "id": "cust_residential",
+          "name": "Kent Residential Zone",
+          "lat": 47.38,
+          "lon": -122.24,
+          "demand_units": 2800.0,
+          "service_sla_minutes": 40.0,
+          "priority": 1
+        }
+      ],
+      "edges": [],
+      "hazards": [
+        {
+          "hazard_id": "hz_duwamish_surge",
+          "hazard_type": "FloodZone",
+          "severity": "High",
+          "coordinates": [
+            [
+              [
+                -122.42,
+                47.22
+              ],
+              [
+                -122.38,
+                47.22
+              ],
+              [
+                -122.38,
+                47.26
+              ],
+              [
+                -122.42,
+                47.26
+              ],
+              [
+                -122.42,
+                47.22
+              ]
+            ]
+          ],
+          "description": "Duwamish / lower delta storm surge corridor (mock hazard polygon)."
+        }
+      ]
+    },
+    "error": null,
+    "timestamp": "2026-08-26T20:55:53.347402+00:00"
+  },
+  {
+    "agent_no": 6,
+    "agent_name": "Optimization Agent",
+    "description": "Formulates facility-location + multi-commodity flow as a MILP (Google OR-Tools CBC) for a least-cost baseline, then re-solves across a resilience-bias sweep to build a non-dominated Cost-vs-Resilience Pareto frontier.",
+    "status": "error",
+    "duration_s": 0.0,
+    "output_summary": "0 Pareto solutions; no feasible best-balanced solution found",
+    "raw_output": {
+      "frontier_count": 0,
+      "best_solution": null
+    },
+    "error": null,
+    "timestamp": "2026-08-26T20:55:58.350606+00:00"
+  },
+  {
+    "agent_no": 7,
+    "agent_name": "Disaster Simulation Agent",
+    "description": "Uses the graph's Mireye-derived flood-risk scores and node names to build a geographically grounded disruption scenario (flood, road closure, demand surge, or facility outage).",
+    "status": "success",
+    "duration_s": 0.0,
+    "output_summary": "'100-Year Green River Valley Inundation' -> 0 warehouses, 0 edges affected",
+    "raw_output": {
+      "disruption_id": "disrupt_b4319de4",
+      "disruption_type": "flood",
+      "title": "100-Year Green River Valley Inundation",
+      "description": "Severe atmospheric river triggers 100-year flood event along Green River valley corridor. Warehouses in low-elevation zones inundated and SR-167 transit disrupted.",
+      "affected_warehouse_ids": [],
+      "affected_edge_ids": [],
+      "demand_multiplier": 1.1,
+      "flood_depth_m": 1.85,
+      "timestamp": "2026-08-26T20:56:03.362277+00:00",
+      "provenance": null
+    },
+    "error": null,
+    "timestamp": "2026-08-26T20:56:03.362277+00:00"
+  },
+  {
+    "agent_no": 8,
+    "agent_name": "Recovery / Verification Agent",
+    "description": "Marks disrupted warehouses/edges inactive, re-assigns only the customers cut off from a disabled facility to the nearest surviving open warehouse (re-querying the Gateway only for those delta routes), targeting a sub-60-second recovery re-solve.",
+    "status": "skipped",
+    "duration_s": 0.0,
+    "output_summary": "Skipped: missing upstream inputs.",
+    "raw_output": null,
+    "error": null,
+    "timestamp": "2026-08-26T20:56:08.363848+00:00"
+  },
+  {
+    "agent_no": 9,
+    "agent_name": "Critic Agent",
+    "description": "Audits the final state before it reaches a user: verifies every candidate/edge carries a Mireye provenance tag, that no warehouse is over capacity, customers are only assigned to open facilities, and total cost is within budget.",
+    "status": "skipped",
+    "duration_s": 0.0,
+    "output_summary": "Skipped: missing upstream inputs.",
+    "raw_output": null,
+    "error": null,
+    "timestamp": "2026-08-26T20:56:13.384290+00:00"
+  },
+  {
+    "agent_no": 10,
+    "agent_name": "Reporting / Narrator Agent",
+    "description": "Synthesizes candidates, graph, Pareto frontier, active solution, disruption and critic report into an executive narrative, and separately answers free-form what-if questions by matching the query against structured state fields.",
+    "status": "skipped",
+    "duration_s": 0.0,
+    "output_summary": "Skipped: missing upstream inputs.",
+    "raw_output": null,
+    "error": null,
+    "timestamp": "2026-08-26T20:56:18.384911+00:00"
+  },
+  {
+    "agent_no": 1,
+    "agent_name": "Controller / Supervisor Agent",
+    "description": "Compiles all of the above into a compiled LangGraph StateGraph (site -> risk -> route -> optimize -> critic -> narrate) and exposes run_full_pipeline() and trigger_disruption() as the two top-level orchestration entry points.",
+    "status": "error",
+    "duration_s": 3.531,
+    "output_summary": "Full pipeline run failed.",
+    "raw_output": null,
+    "error": "AttributeError: 'NoneType' object has no attribute 'total_cost'\nTraceback (most recent call last):\n  File \"C:\\Users\\Lenovo\\OneDrive\\Documents\\opti\\OptiFlow\\test_agents_with_mireye_api.py\", line 684, in stage_controller\n    final_state = await controller.run_full_pipeline(inputs=MOCK_INPUTS)\n  File \"C:\\Users\\Lenovo\\OneDrive\\Documents\\opti\\OptiFlow\\agents\\controller_agent.py\", line 207, in run_full_pipeline\n    final_state = await self.graph.ainvoke(initial_state)\n  File \"C:\\Users\\Lenovo\\OneDrive\\Documents\\opti\\OptiFlow\\.venv\\lib\\site-packages\\langgraph\\pregel\\main.py\", line 4090, in ainvoke\n    async for chunk in self.astream(\n  File \"C:\\Users\\Lenovo\\OneDrive\\Documents\\opti\\OptiFlow\\.venv\\lib\\site-packages\\langgraph\\pregel\\main.py\", line 3440, in astream\n    async for _ in runner.atick(\n  File \"C:\\Users\\Lenovo\\OneDrive\\Documents\\opti\\OptiFlow\\.venv\\lib\\site-packages\\langgraph\\pregel\\_runner.py\", line 396, in atick\n    await arun_with_retry(\n  File \"C:\\Users\\Lenovo\\OneDrive\\Documents\\opti\\OptiFlow\\.venv\\lib\\site-packages\\langgraph\\pregel\\_retry.py\", line 744, in arun_with_retry\n    return await task.proc.ainvoke(task.input, config)\n  File \"C:\\Users\\Lenovo\\OneDrive\\Documents\\opti\\OptiFlow\\.venv\\lib\\site-packages\\langgraph\\_internal\\_runnable.py\", line 760, in ainvoke\n    input = await step.ainvoke(input, config, **kwargs)\n  File \"C:\\Users\\Lenovo\\OneDrive\\Documents\\opti\\OptiFlow\\.venv\\lib\\site-packages\\langgraph\\_internal\\_runnable.py\", line 522, in ainvoke\n    ret = await self.afunc(*args, **kwargs)\n  File \"C:\\Users\\Lenovo\\OneDrive\\Documents\\opti\\OptiFlow\\agents\\controller_agent.py\", line 153, in _node_narrator_reporting\n    narrative, events = self.narrator_agent.generate_narrative(\n  File \"C:\\Users\\Lenovo\\OneDrive\\Documents\\opti\\OptiFlow\\agents\\narrator_agent.py\", line 56, in generate_narrative\n    cost_diff = active_solution.total_cost - baseline.total_cost\nAttributeError: 'NoneType' object has no attribute 'total_cost'\n",
+    "timestamp": "2026-08-26T20:56:26.929244+00:00"
+  }
+]

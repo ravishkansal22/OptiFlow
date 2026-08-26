@@ -283,6 +283,22 @@ class OptimizationAgent:
 
         frontier, baseline = self.generate_pareto_frontier(graph, inputs)
 
+        # No feasible MILP solution exists -- e.g. zero warehouses survived Site/Risk
+        # screening, so there is nothing for _solve_milp_instance() to select from.
+        # Bail out here with a clear trace event instead of crashing below on
+        # baseline.total_cost / best_balanced.total_cost against a None solution.
+        if baseline is None:
+            trace_events.append(AgentTraceEvent(
+                event_id=str(uuid.uuid4()),
+                agent_name=self.name,
+                action="ParetoOptimization",
+                status="error",
+                message="No feasible facility-location solution: zero warehouse candidates were available to the MILP (none survived Site/Risk screening, or the graph has no active warehouses).",
+                details={"frontier_count": 0},
+                timestamp=""
+            ))
+            return [], None, trace_events
+
         # Pick best balanced solution on the frontier (middle-high resilience)
         best_balanced = min(frontier, key=lambda s: abs(s.resilience_score - 0.85)) if frontier else baseline
 

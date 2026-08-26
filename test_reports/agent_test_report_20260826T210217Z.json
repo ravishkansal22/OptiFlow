@@ -1,0 +1,1503 @@
+[
+  {
+    "agent_no": 0,
+    "agent_name": "Mireye API Connectivity Probe",
+    "description": "Not one of the 10 agents -- a standalone preamble check that makes a direct HTTPS GET to the configured MIREYE_BASE_URL, independent of the Gateway's own retry/fallback logic, so DNS/network/auth problems are visible immediately instead of being silently absorbed later.",
+    "status": "success",
+    "duration_s": 0.0,
+    "output_summary": "REACHABLE -- HTTP 404 in 475 ms",
+    "raw_output": null,
+    "error": null,
+    "timestamp": "2026-08-26T21:02:18.041310+00:00"
+  },
+  {
+    "agent_no": 2,
+    "agent_name": "Mireye Gateway Agent",
+    "description": "Owns all outbound Mireye traffic. Builds a cache key from (layer, geohash-7, radius); on a cache miss it either performs a live HTTPS call (implemented today ONLY for terrain-elevation) or falls back to a deterministic local geospatial simulation, then stamps every response with an immutable provenance tag (endpoint, params, SHA-256 response hash, cached flag, latency).",
+    "status": "success",
+    "duration_s": 3.922,
+    "output_summary": "terrain elevation=4.06m slope=1.21%; land_cover=Barren or Impervious; flood_zone=Zone X500 (Wetland-Adjacent, Moderate Hazard); route=5.1km/8.6min; 2nd terrain call cached=True; live HTTP attempts this stage=5",
+    "raw_output": {
+      "terrain": {
+        "lat": 47.2412,
+        "lon": -122.4089,
+        "elevation_m": 4.06,
+        "slope_degrees": 0.7,
+        "slope_pct": 1.21,
+        "aspect": "SW",
+        "buildability_score": 0.879,
+        "provenance": {
+          "endpoint": "/v1/fetch",
+          "params": {
+            "lat": 47.2412,
+            "lng": -122.4089,
+            "preset": "terrain"
+          },
+          "timestamp": "2026-08-26T21:02:23.841483+00:00",
+          "response_hash": "1f6144cd2a21bca0",
+          "cached": false,
+          "latency_ms": 801.42
+        }
+      },
+      "land_cover": {
+        "lat": 47.2412,
+        "lon": -122.4089,
+        "radius_m": 500.0,
+        "primary_land_cover": "Barren or Impervious",
+        "is_industrial_zoned": true,
+        "building_footprint_sqm": 1089.4,
+        "available_parcel_sqm": 59000.0,
+        "is_occupied": false,
+        "provenance": {
+          "endpoint": "/v1/fetch",
+          "params": {
+            "lat": 47.2412,
+            "lng": -122.4089,
+            "preset": "land_cover",
+            "fields": [
+              "primary_building_footprint_sqm",
+              "primary_building_overture_class"
+            ]
+          },
+          "timestamp": "2026-08-26T21:02:24.512705+00:00",
+          "response_hash": "8fb1193d85c314a5",
+          "cached": false,
+          "latency_ms": 667.74
+        }
+      },
+      "flood": {
+        "lat": 47.2412,
+        "lon": -122.4089,
+        "flood_zone": "Zone X500 (Wetland-Adjacent, Moderate Hazard)",
+        "annual_flood_probability": 0.004,
+        "elevation_differential_m": -5.94,
+        "historical_flood_events": 1,
+        "flood_risk_index": 0.4,
+        "provenance": {
+          "endpoint": "/v1/fetch",
+          "params": {
+            "lat": 47.2412,
+            "lng": -122.4089,
+            "preset": "flood_risk"
+          },
+          "timestamp": "2026-08-26T21:02:25.507104+00:00",
+          "response_hash": "eea25aff18179021",
+          "cached": false,
+          "latency_ms": 997.19
+        }
+      },
+      "routing": {
+        "origin": [
+          47.2725,
+          -122.4182
+        ],
+        "destination": [
+          47.2412,
+          -122.4089
+        ],
+        "distance_km": 5.1,
+        "duration_minutes": 8.6,
+        "toll_cost_usd": 0.0,
+        "fuel_cost_usd": 16.57,
+        "route_risk_score": 0.15,
+        "geometry_geojson": null,
+        "provenance": {
+          "endpoint": "/v1/proximity",
+          "params": {
+            "origin": [
+              47.2725,
+              -122.4182
+            ],
+            "destination": [
+              47.2412,
+              -122.4089
+            ],
+            "mode": "heavy_truck"
+          },
+          "timestamp": "2026-08-26T21:02:26.964685+00:00",
+          "response_hash": "9210e7a50728dae7",
+          "cached": false,
+          "latency_ms": 1453.36
+        }
+      }
+    },
+    "error": null,
+    "timestamp": "2026-08-26T21:02:26.964685+00:00"
+  },
+  {
+    "agent_no": 3,
+    "agent_name": "Site Generation Agent",
+    "description": "For each raw candidate site, calls the Gateway for terrain slope/elevation and land-cover/parcel data, then screens out sites with slope > 8%, elevation > 250m, protected/occupied zoning, or usable parcel area < 25,000 sqm.",
+    "status": "success",
+    "duration_s": 6.692,
+    "output_summary": "3/5 passed site screening -> ['cand_good_site', 'cand_auburn_hub', 'cand_flood_delta']; rejected -> {'cand_high_slope_cougar': ['Slope exceeds buildable limit: 24.42% (Max: 8.0%)', 'Elevation excessive for heavy freight logistics: 381.92m', 'Parcel occupied / protected conservation zoning: Trees'], 'cand_restricted_wetland': ['Parcel occupied / protected conservation zoning: Water']}",
+    "raw_output": [
+      {
+        "id": "cand_good_site",
+        "name": "Green River Logistics Center (South Kent)",
+        "lat": 47.3688,
+        "lon": -122.2289,
+        "demand_weight": 0.0,
+        "terrain_slope_pct": 1.21,
+        "elevation_m": 15.38,
+        "land_cover": "Barren or Impervious",
+        "parcel_area_sqm": 72000.0,
+        "is_occupied": false,
+        "flood_risk_score": 0.0,
+        "hazard_score": 0.0,
+        "composite_risk": 0.0,
+        "passed_screening": true,
+        "rejection_reasons": [],
+        "fixed_operating_cost": 125000.0,
+        "capacity_units": 28000.0,
+        "provenance": {
+          "terrain": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.3688,
+              "lng": -122.2289,
+              "preset": "terrain"
+            },
+            "timestamp": "2026-08-26T21:02:32.558120+00:00",
+            "response_hash": "2a61cf64f0ebf235",
+            "cached": false,
+            "latency_ms": 587.46
+          },
+          "land_cover": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.3688,
+              "lng": -122.2289,
+              "preset": "land_cover",
+              "fields": [
+                "primary_building_footprint_sqm",
+                "primary_building_overture_class"
+              ]
+            },
+            "timestamp": "2026-08-26T21:02:33.131038+00:00",
+            "response_hash": "a5dcf36f455b3a91",
+            "cached": false,
+            "latency_ms": 572.6
+          }
+        }
+      },
+      {
+        "id": "cand_auburn_hub",
+        "name": "Auburn 400 Logistics Hub",
+        "lat": 47.3075,
+        "lon": -122.2257,
+        "demand_weight": 0.0,
+        "terrain_slope_pct": 0.51,
+        "elevation_m": 25.83,
+        "land_cover": "Barren or Impervious",
+        "parcel_area_sqm": 85000.0,
+        "is_occupied": false,
+        "flood_risk_score": 0.0,
+        "hazard_score": 0.0,
+        "composite_risk": 0.0,
+        "passed_screening": true,
+        "rejection_reasons": [],
+        "fixed_operating_cost": 140000.0,
+        "capacity_units": 32000.0,
+        "provenance": {
+          "terrain": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.3075,
+              "lng": -122.2257,
+              "preset": "terrain"
+            },
+            "timestamp": "2026-08-26T21:02:33.744846+00:00",
+            "response_hash": "7bfeb9cc8e29af23",
+            "cached": false,
+            "latency_ms": 616.02
+          },
+          "land_cover": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.3075,
+              "lng": -122.2257,
+              "preset": "land_cover",
+              "fields": [
+                "primary_building_footprint_sqm",
+                "primary_building_overture_class"
+              ]
+            },
+            "timestamp": "2026-08-26T21:02:34.373706+00:00",
+            "response_hash": "55a5d01d3ecfa924",
+            "cached": false,
+            "latency_ms": 625.99
+          }
+        }
+      },
+      {
+        "id": "cand_high_slope_cougar",
+        "name": "Cougar Mountain Highland Tract (Unbuildable)",
+        "lat": 47.535,
+        "lon": -122.102,
+        "demand_weight": 0.0,
+        "terrain_slope_pct": 24.42,
+        "elevation_m": 381.92,
+        "land_cover": "Trees",
+        "parcel_area_sqm": 0.0,
+        "is_occupied": true,
+        "flood_risk_score": 0.0,
+        "hazard_score": 0.0,
+        "composite_risk": 0.0,
+        "passed_screening": false,
+        "rejection_reasons": [
+          "Slope exceeds buildable limit: 24.42% (Max: 8.0%)",
+          "Elevation excessive for heavy freight logistics: 381.92m",
+          "Parcel occupied / protected conservation zoning: Trees"
+        ],
+        "fixed_operating_cost": 180000.0,
+        "capacity_units": 12000.0,
+        "provenance": {
+          "terrain": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.535,
+              "lng": -122.102,
+              "preset": "terrain"
+            },
+            "timestamp": "2026-08-26T21:02:34.867673+00:00",
+            "response_hash": "30ecf49c62ed05b6",
+            "cached": false,
+            "latency_ms": 493.69
+          },
+          "land_cover": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.535,
+              "lng": -122.102,
+              "preset": "land_cover",
+              "fields": [
+                "primary_building_footprint_sqm",
+                "primary_building_overture_class"
+              ]
+            },
+            "timestamp": "2026-08-26T21:02:35.651375+00:00",
+            "response_hash": "5f86dac1bea00944",
+            "cached": false,
+            "latency_ms": 783.44
+          }
+        }
+      },
+      {
+        "id": "cand_flood_delta",
+        "name": "Puyallup River Confluence Site",
+        "lat": 47.2412,
+        "lon": -122.4089,
+        "demand_weight": 0.0,
+        "terrain_slope_pct": 1.21,
+        "elevation_m": 4.06,
+        "land_cover": "Barren or Impervious",
+        "parcel_area_sqm": 59000.0,
+        "is_occupied": false,
+        "flood_risk_score": 0.0,
+        "hazard_score": 0.0,
+        "composite_risk": 0.0,
+        "passed_screening": true,
+        "rejection_reasons": [],
+        "fixed_operating_cost": 120000.0,
+        "capacity_units": 25000.0,
+        "provenance": {
+          "terrain": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.2412,
+              "lng": -122.4089,
+              "preset": "terrain"
+            },
+            "timestamp": "2026-08-26T21:02:35.651375+00:00",
+            "response_hash": "1f6144cd2a21bca0",
+            "cached": true,
+            "latency_ms": 0.02
+          },
+          "land_cover": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.2412,
+              "lng": -122.4089,
+              "preset": "land_cover",
+              "fields": [
+                "primary_building_footprint_sqm",
+                "primary_building_overture_class"
+              ]
+            },
+            "timestamp": "2026-08-26T21:02:35.651375+00:00",
+            "response_hash": "8fb1193d85c314a5",
+            "cached": true,
+            "latency_ms": 0.02
+          }
+        }
+      },
+      {
+        "id": "cand_restricted_wetland",
+        "name": "Nisqually Delta Conservation Zone",
+        "lat": 47.12,
+        "lon": -122.68,
+        "demand_weight": 0.0,
+        "terrain_slope_pct": 0.0,
+        "elevation_m": 0.03,
+        "land_cover": "Water",
+        "parcel_area_sqm": 0.0,
+        "is_occupied": true,
+        "flood_risk_score": 0.0,
+        "hazard_score": 0.0,
+        "composite_risk": 0.0,
+        "passed_screening": false,
+        "rejection_reasons": [
+          "Parcel occupied / protected conservation zoning: Water"
+        ],
+        "fixed_operating_cost": 95000.0,
+        "capacity_units": 10000.0,
+        "provenance": {
+          "terrain": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.12,
+              "lng": -122.68,
+              "preset": "terrain"
+            },
+            "timestamp": "2026-08-26T21:02:37.831660+00:00",
+            "response_hash": "0b3e6345f6fe63ae",
+            "cached": false,
+            "latency_ms": 2181.5
+          },
+          "land_cover": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.12,
+              "lng": -122.68,
+              "preset": "land_cover",
+              "fields": [
+                "primary_building_footprint_sqm",
+                "primary_building_overture_class"
+              ]
+            },
+            "timestamp": "2026-08-26T21:02:38.661350+00:00",
+            "response_hash": "2dfdaceec55feef4",
+            "cached": false,
+            "latency_ms": 830.17
+          }
+        }
+      }
+    ],
+    "error": null,
+    "timestamp": "2026-08-26T21:02:38.661350+00:00"
+  },
+  {
+    "agent_no": 4,
+    "agent_name": "Risk Agent",
+    "description": "For every site that survived site screening, calls the Gateway's flood-hazard endpoint and blends flood risk index (65%), historical flood-event frequency (20%) and terrain slope (15%) into a single 0-1 composite risk score; sites above 0.75 are rejected.",
+    "status": "success",
+    "duration_s": 6.355,
+    "output_summary": "3/5 qualified after hazard scoring -> ['cand_good_site', 'cand_auburn_hub', 'cand_flood_delta']",
+    "raw_output": [
+      {
+        "id": "cand_good_site",
+        "name": "Green River Logistics Center (South Kent)",
+        "lat": 47.3688,
+        "lon": -122.2289,
+        "demand_weight": 0.0,
+        "terrain_slope_pct": 1.21,
+        "elevation_m": 15.38,
+        "land_cover": "Barren or Impervious",
+        "parcel_area_sqm": 72000.0,
+        "is_occupied": false,
+        "flood_risk_score": 0.3,
+        "hazard_score": 0.24,
+        "composite_risk": 0.24,
+        "passed_screening": true,
+        "rejection_reasons": [],
+        "fixed_operating_cost": 125000.0,
+        "capacity_units": 28000.0,
+        "provenance": {
+          "terrain": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.3688,
+              "lng": -122.2289,
+              "preset": "terrain"
+            },
+            "timestamp": "2026-08-26T21:02:32.558120+00:00",
+            "response_hash": "2a61cf64f0ebf235",
+            "cached": false,
+            "latency_ms": 587.46
+          },
+          "land_cover": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.3688,
+              "lng": -122.2289,
+              "preset": "land_cover",
+              "fields": [
+                "primary_building_footprint_sqm",
+                "primary_building_overture_class"
+              ]
+            },
+            "timestamp": "2026-08-26T21:02:33.131038+00:00",
+            "response_hash": "a5dcf36f455b3a91",
+            "cached": false,
+            "latency_ms": 572.6
+          },
+          "flood": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.3688,
+              "lng": -122.2289,
+              "preset": "flood_risk"
+            },
+            "timestamp": "2026-08-26T21:02:46.936351+00:00",
+            "response_hash": "db3a0d92feb582b7",
+            "cached": false,
+            "latency_ms": 3264.63
+          }
+        }
+      },
+      {
+        "id": "cand_auburn_hub",
+        "name": "Auburn 400 Logistics Hub",
+        "lat": 47.3075,
+        "lon": -122.2257,
+        "demand_weight": 0.0,
+        "terrain_slope_pct": 0.51,
+        "elevation_m": 25.83,
+        "land_cover": "Barren or Impervious",
+        "parcel_area_sqm": 85000.0,
+        "is_occupied": false,
+        "flood_risk_score": 0.05,
+        "hazard_score": 0.034,
+        "composite_risk": 0.034,
+        "passed_screening": true,
+        "rejection_reasons": [],
+        "fixed_operating_cost": 140000.0,
+        "capacity_units": 32000.0,
+        "provenance": {
+          "terrain": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.3075,
+              "lng": -122.2257,
+              "preset": "terrain"
+            },
+            "timestamp": "2026-08-26T21:02:33.744846+00:00",
+            "response_hash": "7bfeb9cc8e29af23",
+            "cached": false,
+            "latency_ms": 616.02
+          },
+          "land_cover": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.3075,
+              "lng": -122.2257,
+              "preset": "land_cover",
+              "fields": [
+                "primary_building_footprint_sqm",
+                "primary_building_overture_class"
+              ]
+            },
+            "timestamp": "2026-08-26T21:02:34.373706+00:00",
+            "response_hash": "55a5d01d3ecfa924",
+            "cached": false,
+            "latency_ms": 625.99
+          },
+          "flood": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.3075,
+              "lng": -122.2257,
+              "preset": "flood_risk"
+            },
+            "timestamp": "2026-08-26T21:02:50.022214+00:00",
+            "response_hash": "d9ea1023cc36af73",
+            "cached": false,
+            "latency_ms": 3089.73
+          }
+        }
+      },
+      {
+        "id": "cand_high_slope_cougar",
+        "name": "Cougar Mountain Highland Tract (Unbuildable)",
+        "lat": 47.535,
+        "lon": -122.102,
+        "demand_weight": 0.0,
+        "terrain_slope_pct": 24.42,
+        "elevation_m": 381.92,
+        "land_cover": "Trees",
+        "parcel_area_sqm": 0.0,
+        "is_occupied": true,
+        "flood_risk_score": 0.0,
+        "hazard_score": 0.0,
+        "composite_risk": 0.0,
+        "passed_screening": false,
+        "rejection_reasons": [
+          "Slope exceeds buildable limit: 24.42% (Max: 8.0%)",
+          "Elevation excessive for heavy freight logistics: 381.92m",
+          "Parcel occupied / protected conservation zoning: Trees"
+        ],
+        "fixed_operating_cost": 180000.0,
+        "capacity_units": 12000.0,
+        "provenance": {
+          "terrain": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.535,
+              "lng": -122.102,
+              "preset": "terrain"
+            },
+            "timestamp": "2026-08-26T21:02:34.867673+00:00",
+            "response_hash": "30ecf49c62ed05b6",
+            "cached": false,
+            "latency_ms": 493.69
+          },
+          "land_cover": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.535,
+              "lng": -122.102,
+              "preset": "land_cover",
+              "fields": [
+                "primary_building_footprint_sqm",
+                "primary_building_overture_class"
+              ]
+            },
+            "timestamp": "2026-08-26T21:02:35.651375+00:00",
+            "response_hash": "5f86dac1bea00944",
+            "cached": false,
+            "latency_ms": 783.44
+          }
+        }
+      },
+      {
+        "id": "cand_flood_delta",
+        "name": "Puyallup River Confluence Site",
+        "lat": 47.2412,
+        "lon": -122.4089,
+        "demand_weight": 0.0,
+        "terrain_slope_pct": 1.21,
+        "elevation_m": 4.06,
+        "land_cover": "Barren or Impervious",
+        "parcel_area_sqm": 59000.0,
+        "is_occupied": false,
+        "flood_risk_score": 0.4,
+        "hazard_score": 0.305,
+        "composite_risk": 0.305,
+        "passed_screening": true,
+        "rejection_reasons": [],
+        "fixed_operating_cost": 120000.0,
+        "capacity_units": 25000.0,
+        "provenance": {
+          "terrain": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.2412,
+              "lng": -122.4089,
+              "preset": "terrain"
+            },
+            "timestamp": "2026-08-26T21:02:35.651375+00:00",
+            "response_hash": "1f6144cd2a21bca0",
+            "cached": true,
+            "latency_ms": 0.02
+          },
+          "land_cover": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.2412,
+              "lng": -122.4089,
+              "preset": "land_cover",
+              "fields": [
+                "primary_building_footprint_sqm",
+                "primary_building_overture_class"
+              ]
+            },
+            "timestamp": "2026-08-26T21:02:35.651375+00:00",
+            "response_hash": "8fb1193d85c314a5",
+            "cached": true,
+            "latency_ms": 0.02
+          },
+          "flood": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.2412,
+              "lng": -122.4089,
+              "preset": "flood_risk"
+            },
+            "timestamp": "2026-08-26T21:02:50.022214+00:00",
+            "response_hash": "eea25aff18179021",
+            "cached": true,
+            "latency_ms": 0.01
+          }
+        }
+      },
+      {
+        "id": "cand_restricted_wetland",
+        "name": "Nisqually Delta Conservation Zone",
+        "lat": 47.12,
+        "lon": -122.68,
+        "demand_weight": 0.0,
+        "terrain_slope_pct": 0.0,
+        "elevation_m": 0.03,
+        "land_cover": "Water",
+        "parcel_area_sqm": 0.0,
+        "is_occupied": true,
+        "flood_risk_score": 0.0,
+        "hazard_score": 0.0,
+        "composite_risk": 0.0,
+        "passed_screening": false,
+        "rejection_reasons": [
+          "Parcel occupied / protected conservation zoning: Water"
+        ],
+        "fixed_operating_cost": 95000.0,
+        "capacity_units": 10000.0,
+        "provenance": {
+          "terrain": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.12,
+              "lng": -122.68,
+              "preset": "terrain"
+            },
+            "timestamp": "2026-08-26T21:02:37.831660+00:00",
+            "response_hash": "0b3e6345f6fe63ae",
+            "cached": false,
+            "latency_ms": 2181.5
+          },
+          "land_cover": {
+            "endpoint": "/v1/fetch",
+            "params": {
+              "lat": 47.12,
+              "lng": -122.68,
+              "preset": "land_cover",
+              "fields": [
+                "primary_building_footprint_sqm",
+                "primary_building_overture_class"
+              ]
+            },
+            "timestamp": "2026-08-26T21:02:38.661350+00:00",
+            "response_hash": "2dfdaceec55feef4",
+            "cached": false,
+            "latency_ms": 830.17
+          }
+        }
+      }
+    ],
+    "error": null,
+    "timestamp": "2026-08-26T21:02:50.022214+00:00"
+  },
+  {
+    "agent_no": 5,
+    "agent_name": "Route / Graph Builder Agent",
+    "description": "Assembles supplier, warehouse and customer nodes, then batches an origin-destination Gateway routing call for every supplier->warehouse and warehouse->customer pair to attach real distance/time/cost/route-risk weights, plus regional hazard polygons.",
+    "status": "success",
+    "duration_s": 21.45,
+    "output_summary": "2 suppliers, 3 warehouses, 4 customers, 18 weighted edges, 1 hazard polygons",
+    "raw_output": {
+      "suppliers": [
+        {
+          "id": "sup_portA",
+          "name": "Port A Intermodal Terminal",
+          "lat": 47.2725,
+          "lon": -122.4182,
+          "capacity_units": 40000.0,
+          "unit_supply_cost": 8.5
+        },
+        {
+          "id": "sup_hubB",
+          "name": "Rail Freight Hub B",
+          "lat": 47.3809,
+          "lon": -122.2348,
+          "capacity_units": 30000.0,
+          "unit_supply_cost": 8.0
+        }
+      ],
+      "warehouses": [
+        {
+          "id": "cand_good_site",
+          "candidate_id": "cand_good_site",
+          "name": "Green River Logistics Center (South Kent)",
+          "lat": 47.3688,
+          "lon": -122.2289,
+          "capacity_units": 28000.0,
+          "fixed_operating_cost": 125000.0,
+          "flood_risk_score": 0.3,
+          "status": "active"
+        },
+        {
+          "id": "cand_auburn_hub",
+          "candidate_id": "cand_auburn_hub",
+          "name": "Auburn 400 Logistics Hub",
+          "lat": 47.3075,
+          "lon": -122.2257,
+          "capacity_units": 32000.0,
+          "fixed_operating_cost": 140000.0,
+          "flood_risk_score": 0.05,
+          "status": "active"
+        },
+        {
+          "id": "cand_flood_delta",
+          "candidate_id": "cand_flood_delta",
+          "name": "Puyallup River Confluence Site",
+          "lat": 47.2412,
+          "lon": -122.4089,
+          "capacity_units": 25000.0,
+          "fixed_operating_cost": 120000.0,
+          "flood_risk_score": 0.4,
+          "status": "active"
+        }
+      ],
+      "customers": [
+        {
+          "id": "cust_medical",
+          "name": "Downtown Medical District",
+          "lat": 47.6,
+          "lon": -122.33,
+          "demand_units": 4200.0,
+          "service_sla_minutes": 45.0,
+          "priority": 3
+        },
+        {
+          "id": "cust_tech",
+          "name": "Bellevue Tech Campus",
+          "lat": 47.61,
+          "lon": -122.2,
+          "demand_units": 5200.0,
+          "service_sla_minutes": 60.0,
+          "priority": 2
+        },
+        {
+          "id": "cust_urban",
+          "name": "Tacoma Urban Center",
+          "lat": 47.25,
+          "lon": -122.44,
+          "demand_units": 3600.0,
+          "service_sla_minutes": 50.0,
+          "priority": 2
+        },
+        {
+          "id": "cust_residential",
+          "name": "Kent Residential Zone",
+          "lat": 47.38,
+          "lon": -122.24,
+          "demand_units": 2800.0,
+          "service_sla_minutes": 40.0,
+          "priority": 1
+        }
+      ],
+      "edges": [
+        {
+          "id": "edge_sup_portA_to_cand_good_site",
+          "source_id": "sup_portA",
+          "target_id": "cand_good_site",
+          "distance_km": 27.9,
+          "travel_time_min": 28.9,
+          "transport_cost_usd": 78.74,
+          "route_risk_score": 0.15,
+          "status": "active",
+          "provenance": {
+            "endpoint": "/v1/proximity",
+            "params": {
+              "origin": [
+                47.2725,
+                -122.4182
+              ],
+              "destination": [
+                47.3688,
+                -122.2289
+              ],
+              "mode": "heavy_truck"
+            },
+            "timestamp": "2026-08-26T21:02:56.185949+00:00",
+            "response_hash": "53b93107449e33b7",
+            "cached": false,
+            "latency_ms": 1162.54
+          }
+        },
+        {
+          "id": "edge_sup_portA_to_cand_auburn_hub",
+          "source_id": "sup_portA",
+          "target_id": "cand_auburn_hub",
+          "distance_km": 21.6,
+          "travel_time_min": 22.0,
+          "transport_cost_usd": 60.74,
+          "route_risk_score": 0.15,
+          "status": "active",
+          "provenance": {
+            "endpoint": "/v1/proximity",
+            "params": {
+              "origin": [
+                47.2725,
+                -122.4182
+              ],
+              "destination": [
+                47.3075,
+                -122.2257
+              ],
+              "mode": "heavy_truck"
+            },
+            "timestamp": "2026-08-26T21:02:57.402202+00:00",
+            "response_hash": "b549f845979198b1",
+            "cached": false,
+            "latency_ms": 1209.1
+          }
+        },
+        {
+          "id": "edge_sup_portA_to_cand_flood_delta",
+          "source_id": "sup_portA",
+          "target_id": "cand_flood_delta",
+          "distance_km": 5.1,
+          "travel_time_min": 8.6,
+          "transport_cost_usd": 16.57,
+          "route_risk_score": 0.15,
+          "status": "active",
+          "provenance": {
+            "endpoint": "/v1/proximity",
+            "params": {
+              "origin": [
+                47.2725,
+                -122.4182
+              ],
+              "destination": [
+                47.2412,
+                -122.4089
+              ],
+              "mode": "heavy_truck"
+            },
+            "timestamp": "2026-08-26T21:02:57.402202+00:00",
+            "response_hash": "9210e7a50728dae7",
+            "cached": true,
+            "latency_ms": 0.02
+          }
+        },
+        {
+          "id": "edge_sup_hubB_to_cand_good_site",
+          "source_id": "sup_hubB",
+          "target_id": "cand_good_site",
+          "distance_km": 1.7,
+          "travel_time_min": 2.5,
+          "transport_cost_usd": 5.29,
+          "route_risk_score": 0.45,
+          "status": "active",
+          "provenance": {
+            "endpoint": "/v1/proximity",
+            "params": {
+              "origin": [
+                47.3809,
+                -122.2348
+              ],
+              "destination": [
+                47.3688,
+                -122.2289
+              ],
+              "mode": "heavy_truck"
+            },
+            "timestamp": "2026-08-26T21:02:58.612870+00:00",
+            "response_hash": "cd0d4b2b3c45b323",
+            "cached": false,
+            "latency_ms": 1224.2
+          }
+        },
+        {
+          "id": "edge_sup_hubB_to_cand_auburn_hub",
+          "source_id": "sup_hubB",
+          "target_id": "cand_auburn_hub",
+          "distance_km": 8.7,
+          "travel_time_min": 11.6,
+          "transport_cost_usd": 26.23,
+          "route_risk_score": 0.45,
+          "status": "active",
+          "provenance": {
+            "endpoint": "/v1/proximity",
+            "params": {
+              "origin": [
+                47.3809,
+                -122.2348
+              ],
+              "destination": [
+                47.3075,
+                -122.2257
+              ],
+              "mode": "heavy_truck"
+            },
+            "timestamp": "2026-08-26T21:03:00.226372+00:00",
+            "response_hash": "d6ae454451b1c7de",
+            "cached": false,
+            "latency_ms": 1602.84
+          }
+        },
+        {
+          "id": "edge_sup_hubB_to_cand_flood_delta",
+          "source_id": "sup_hubB",
+          "target_id": "cand_flood_delta",
+          "distance_km": 25.8,
+          "travel_time_min": 24.1,
+          "transport_cost_usd": 71.15,
+          "route_risk_score": 0.15,
+          "status": "active",
+          "provenance": {
+            "endpoint": "/v1/proximity",
+            "params": {
+              "origin": [
+                47.3809,
+                -122.2348
+              ],
+              "destination": [
+                47.2412,
+                -122.4089
+              ],
+              "mode": "heavy_truck"
+            },
+            "timestamp": "2026-08-26T21:03:01.225245+00:00",
+            "response_hash": "b7be649a5474b891",
+            "cached": false,
+            "latency_ms": 1000.28
+          }
+        },
+        {
+          "id": "edge_cand_good_site_to_cust_medical",
+          "source_id": "cand_good_site",
+          "target_id": "cust_medical",
+          "distance_km": 33.6,
+          "travel_time_min": 30.3,
+          "transport_cost_usd": 91.96,
+          "route_risk_score": 0.15,
+          "status": "active",
+          "provenance": {
+            "endpoint": "/v1/proximity",
+            "params": {
+              "origin": [
+                47.3688,
+                -122.2289
+              ],
+              "destination": [
+                47.6,
+                -122.33
+              ],
+              "mode": "heavy_truck"
+            },
+            "timestamp": "2026-08-26T21:03:02.443686+00:00",
+            "response_hash": "dab20cb68c62306b",
+            "cached": false,
+            "latency_ms": 1213.81
+          }
+        },
+        {
+          "id": "edge_cand_good_site_to_cust_tech",
+          "source_id": "cand_good_site",
+          "target_id": "cust_tech",
+          "distance_km": 31.4,
+          "travel_time_min": 28.4,
+          "transport_cost_usd": 85.98,
+          "route_risk_score": 0.15,
+          "status": "active",
+          "provenance": {
+            "endpoint": "/v1/proximity",
+            "params": {
+              "origin": [
+                47.3688,
+                -122.2289
+              ],
+              "destination": [
+                47.61,
+                -122.2
+              ],
+              "mode": "heavy_truck"
+            },
+            "timestamp": "2026-08-26T21:03:03.585744+00:00",
+            "response_hash": "810da038dead6b81",
+            "cached": false,
+            "latency_ms": 1143.41
+          }
+        },
+        {
+          "id": "edge_cand_good_site_to_cust_urban",
+          "source_id": "cand_good_site",
+          "target_id": "cust_urban",
+          "distance_km": 28.3,
+          "travel_time_min": 27.9,
+          "transport_cost_usd": 78.96,
+          "route_risk_score": 0.15,
+          "status": "active",
+          "provenance": {
+            "endpoint": "/v1/proximity",
+            "params": {
+              "origin": [
+                47.3688,
+                -122.2289
+              ],
+              "destination": [
+                47.25,
+                -122.44
+              ],
+              "mode": "heavy_truck"
+            },
+            "timestamp": "2026-08-26T21:03:05.394959+00:00",
+            "response_hash": "277265b05ae4cb71",
+            "cached": false,
+            "latency_ms": 1808.11
+          }
+        },
+        {
+          "id": "edge_cand_good_site_to_cust_residential",
+          "source_id": "cand_good_site",
+          "target_id": "cust_residential",
+          "distance_km": 2.0,
+          "travel_time_min": 3.6,
+          "transport_cost_usd": 6.63,
+          "route_risk_score": 0.45,
+          "status": "active",
+          "provenance": {
+            "endpoint": "/v1/proximity",
+            "params": {
+              "origin": [
+                47.3688,
+                -122.2289
+              ],
+              "destination": [
+                47.38,
+                -122.24
+              ],
+              "mode": "heavy_truck"
+            },
+            "timestamp": "2026-08-26T21:03:06.679021+00:00",
+            "response_hash": "4a806ae2c09c52c9",
+            "cached": false,
+            "latency_ms": 1282.69
+          }
+        },
+        {
+          "id": "edge_cand_auburn_hub_to_cust_medical",
+          "source_id": "cand_auburn_hub",
+          "target_id": "cust_medical",
+          "distance_km": 42.4,
+          "travel_time_min": 37.4,
+          "transport_cost_usd": 115.44,
+          "route_risk_score": 0.15,
+          "status": "active",
+          "provenance": {
+            "endpoint": "/v1/proximity",
+            "params": {
+              "origin": [
+                47.3075,
+                -122.2257
+              ],
+              "destination": [
+                47.6,
+                -122.33
+              ],
+              "mode": "heavy_truck"
+            },
+            "timestamp": "2026-08-26T21:03:08.000130+00:00",
+            "response_hash": "9254a06175836c73",
+            "cached": false,
+            "latency_ms": 1322.24
+          }
+        },
+        {
+          "id": "edge_cand_auburn_hub_to_cust_tech",
+          "source_id": "cand_auburn_hub",
+          "target_id": "cust_tech",
+          "distance_km": 40.1,
+          "travel_time_min": 34.7,
+          "transport_cost_usd": 108.75,
+          "route_risk_score": 0.15,
+          "status": "active",
+          "provenance": {
+            "endpoint": "/v1/proximity",
+            "params": {
+              "origin": [
+                47.3075,
+                -122.2257
+              ],
+              "destination": [
+                47.61,
+                -122.2
+              ],
+              "mode": "heavy_truck"
+            },
+            "timestamp": "2026-08-26T21:03:09.083299+00:00",
+            "response_hash": "ea7a0531e060c4d4",
+            "cached": false,
+            "latency_ms": 1081.03
+          }
+        },
+        {
+          "id": "edge_cand_auburn_hub_to_cust_urban",
+          "source_id": "cand_auburn_hub",
+          "target_id": "cust_urban",
+          "distance_km": 22.2,
+          "travel_time_min": 20.9,
+          "transport_cost_usd": 61.28,
+          "route_risk_score": 0.15,
+          "status": "active",
+          "provenance": {
+            "endpoint": "/v1/proximity",
+            "params": {
+              "origin": [
+                47.3075,
+                -122.2257
+              ],
+              "destination": [
+                47.25,
+                -122.44
+              ],
+              "mode": "heavy_truck"
+            },
+            "timestamp": "2026-08-26T21:03:10.346505+00:00",
+            "response_hash": "8bb262b29ecbaa8f",
+            "cached": false,
+            "latency_ms": 1264.02
+          }
+        },
+        {
+          "id": "edge_cand_auburn_hub_to_cust_residential",
+          "source_id": "cand_auburn_hub",
+          "target_id": "cust_residential",
+          "distance_km": 11.7,
+          "travel_time_min": 11.6,
+          "transport_cost_usd": 32.71,
+          "route_risk_score": 0.45,
+          "status": "active",
+          "provenance": {
+            "endpoint": "/v1/proximity",
+            "params": {
+              "origin": [
+                47.3075,
+                -122.2257
+              ],
+              "destination": [
+                47.38,
+                -122.24
+              ],
+              "mode": "heavy_truck"
+            },
+            "timestamp": "2026-08-26T21:03:11.459997+00:00",
+            "response_hash": "d74c1963152d6276",
+            "cached": false,
+            "latency_ms": 1114.17
+          }
+        },
+        {
+          "id": "edge_cand_flood_delta_to_cust_medical",
+          "source_id": "cand_flood_delta",
+          "target_id": "cust_medical",
+          "distance_km": 50.0,
+          "travel_time_min": 41.8,
+          "transport_cost_usd": 134.68,
+          "route_risk_score": 0.15,
+          "status": "active",
+          "provenance": {
+            "endpoint": "/v1/proximity",
+            "params": {
+              "origin": [
+                47.2412,
+                -122.4089
+              ],
+              "destination": [
+                47.6,
+                -122.33
+              ],
+              "mode": "heavy_truck"
+            },
+            "timestamp": "2026-08-26T21:03:12.513380+00:00",
+            "response_hash": "9c21053b93d92b73",
+            "cached": false,
+            "latency_ms": 1055.2
+          }
+        },
+        {
+          "id": "edge_cand_flood_delta_to_cust_tech",
+          "source_id": "cand_flood_delta",
+          "target_id": "cust_tech",
+          "distance_km": 53.9,
+          "travel_time_min": 45.1,
+          "transport_cost_usd": 145.18,
+          "route_risk_score": 0.15,
+          "status": "active",
+          "provenance": {
+            "endpoint": "/v1/proximity",
+            "params": {
+              "origin": [
+                47.2412,
+                -122.4089
+              ],
+              "destination": [
+                47.61,
+                -122.2
+              ],
+              "mode": "heavy_truck"
+            },
+            "timestamp": "2026-08-26T21:03:13.598567+00:00",
+            "response_hash": "582345b65f8dc260",
+            "cached": false,
+            "latency_ms": 1082.21
+          }
+        },
+        {
+          "id": "edge_cand_flood_delta_to_cust_urban",
+          "source_id": "cand_flood_delta",
+          "target_id": "cust_urban",
+          "distance_km": 3.3,
+          "travel_time_min": 5.4,
+          "transport_cost_usd": 10.62,
+          "route_risk_score": 0.15,
+          "status": "active",
+          "provenance": {
+            "endpoint": "/v1/proximity",
+            "params": {
+              "origin": [
+                47.2412,
+                -122.4089
+              ],
+              "destination": [
+                47.25,
+                -122.44
+              ],
+              "mode": "heavy_truck"
+            },
+            "timestamp": "2026-08-26T21:03:15.028792+00:00",
+            "response_hash": "fcf799ca1c00701e",
+            "cached": false,
+            "latency_ms": 1435.04
+          }
+        },
+        {
+          "id": "edge_cand_flood_delta_to_cust_residential",
+          "source_id": "cand_flood_delta",
+          "target_id": "cust_residential",
+          "distance_km": 26.0,
+          "travel_time_min": 23.6,
+          "transport_cost_usd": 71.25,
+          "route_risk_score": 0.15,
+          "status": "active",
+          "provenance": {
+            "endpoint": "/v1/proximity",
+            "params": {
+              "origin": [
+                47.2412,
+                -122.4089
+              ],
+              "destination": [
+                47.38,
+                -122.24
+              ],
+              "mode": "heavy_truck"
+            },
+            "timestamp": "2026-08-26T21:03:16.479999+00:00",
+            "response_hash": "83bff1c9ed549bc9",
+            "cached": false,
+            "latency_ms": 1447.24
+          }
+        }
+      ],
+      "hazards": [
+        {
+          "hazard_id": "hz_duwamish_surge",
+          "hazard_type": "FloodZone",
+          "severity": "High",
+          "coordinates": [
+            [
+              [
+                -122.42,
+                47.22
+              ],
+              [
+                -122.38,
+                47.22
+              ],
+              [
+                -122.38,
+                47.26
+              ],
+              [
+                -122.42,
+                47.26
+              ],
+              [
+                -122.42,
+                47.22
+              ]
+            ]
+          ],
+          "description": "Duwamish / lower delta storm surge corridor (mock hazard polygon)."
+        }
+      ]
+    },
+    "error": null,
+    "timestamp": "2026-08-26T21:03:16.479999+00:00"
+  },
+  {
+    "agent_no": 6,
+    "agent_name": "Optimization Agent",
+    "description": "Formulates facility-location + multi-commodity flow as a MILP (Google OR-Tools CBC) for a least-cost baseline, then re-solves across a resilience-bias sweep to build a non-dominated Cost-vs-Resilience Pareto frontier.",
+    "status": "success",
+    "duration_s": 0.073,
+    "output_summary": "3 Pareto solutions; best-balanced: cost=$247,886, resilience=0.858, warehouses=['cand_flood_delta']",
+    "raw_output": {
+      "frontier_count": 3,
+      "best_solution": {
+        "solution_id": "sol_de7ba62b",
+        "name": "Cost-Only Baseline (Least Financial Outlay)",
+        "selected_warehouse_ids": [
+          "cand_flood_delta"
+        ],
+        "customer_assignments": {
+          "cust_medical": "cand_flood_delta",
+          "cust_tech": "cand_flood_delta",
+          "cust_urban": "cand_flood_delta",
+          "cust_residential": "cand_flood_delta"
+        },
+        "supplier_assignments": {
+          "sup_hubB": [
+            "cand_flood_delta"
+          ]
+        },
+        "flows": [
+          {
+            "source_id": "sup_hubB",
+            "target_id": "cand_flood_delta",
+            "units_shipped": 15800.0,
+            "cost_usd": 127524.17
+          }
+        ],
+        "total_fixed_cost": 120000.0,
+        "total_transport_cost": 127885.9,
+        "total_cost": 247885.9,
+        "demand_retained_pct": 100.0,
+        "normalized_recovery_cost": 0.355,
+        "resilience_score": 0.858,
+        "is_baseline_cost_only": true,
+        "rank": 1,
+        "description": "Optimized purely for minimum fixed + transit cost; unshielded from flood exposure."
+      }
+    },
+    "error": null,
+    "timestamp": "2026-08-26T21:03:21.566976+00:00"
+  },
+  {
+    "agent_no": 7,
+    "agent_name": "Disaster Simulation Agent",
+    "description": "Uses the graph's Mireye-derived flood-risk scores and node names to build a geographically grounded disruption scenario (flood, road closure, demand surge, or facility outage).",
+    "status": "success",
+    "duration_s": 0.0,
+    "output_summary": "'100-Year Green River Valley Inundation' -> 1 warehouses, 6 edges affected",
+    "raw_output": {
+      "disruption_id": "disrupt_9970d14b",
+      "disruption_type": "flood",
+      "title": "100-Year Green River Valley Inundation",
+      "description": "Severe atmospheric river triggers 100-year flood event along Green River valley corridor. Warehouses in low-elevation zones inundated and SR-167 transit disrupted.",
+      "affected_warehouse_ids": [
+        "cand_good_site"
+      ],
+      "affected_edge_ids": [
+        "edge_sup_portA_to_cand_good_site",
+        "edge_sup_hubB_to_cand_good_site",
+        "edge_cand_good_site_to_cust_medical",
+        "edge_cand_good_site_to_cust_tech",
+        "edge_cand_good_site_to_cust_urban",
+        "edge_cand_good_site_to_cust_residential"
+      ],
+      "demand_multiplier": 1.1,
+      "flood_depth_m": 1.85,
+      "timestamp": "2026-08-26T21:03:26.571526+00:00",
+      "provenance": null
+    },
+    "error": null,
+    "timestamp": "2026-08-26T21:03:26.571526+00:00"
+  },
+  {
+    "agent_no": 8,
+    "agent_name": "Recovery / Verification Agent",
+    "description": "Marks disrupted warehouses/edges inactive, re-assigns only the customers cut off from a disabled facility to the nearest surviving open warehouse (re-querying the Gateway only for those delta routes), targeting a sub-60-second recovery re-solve.",
+    "status": "success",
+    "duration_s": 0.02,
+    "output_summary": "recovered in 0.020s (internal timer); demand retained 100.0%; resilience 1.0; sub-60s target met = True",
+    "raw_output": {
+      "solution_id": "sol_recov_cd2a9e",
+      "name": "Recovered Network Plan (100-Year Green River Valley Inundation)",
+      "selected_warehouse_ids": [
+        "cand_flood_delta"
+      ],
+      "customer_assignments": {
+        "cust_medical": "cand_flood_delta",
+        "cust_tech": "cand_flood_delta",
+        "cust_urban": "cand_flood_delta",
+        "cust_residential": "cand_flood_delta"
+      },
+      "supplier_assignments": {
+        "sup_hubB": [
+          "cand_flood_delta"
+        ]
+      },
+      "flows": [
+        {
+          "source_id": "sup_hubB",
+          "target_id": "cand_flood_delta",
+          "units_shipped": 15800.0,
+          "cost_usd": 127524.17
+        }
+      ],
+      "total_fixed_cost": 120000.0,
+      "total_transport_cost": 127885.9,
+      "total_cost": 247885.9,
+      "demand_retained_pct": 100.0,
+      "normalized_recovery_cost": 0.0,
+      "resilience_score": 1.0,
+      "is_baseline_cost_only": false,
+      "rank": 1,
+      "description": "Automated warm-start recovery re-solve. 100.0% demand retained within SLA."
+    },
+    "error": null,
+    "timestamp": "2026-08-26T21:03:31.605220+00:00"
+  },
+  {
+    "agent_no": 9,
+    "agent_name": "Critic Agent",
+    "description": "Audits the final state before it reaches a user: verifies every candidate/edge carries a Mireye provenance tag, that no warehouse is over capacity, customers are only assigned to open facilities, and total cost is within budget.",
+    "status": "success",
+    "duration_s": 0.0,
+    "output_summary": "passed=True; evidence coverage=100.0%; flags=0; constraint violations=0",
+    "raw_output": {
+      "passed": true,
+      "flags": [],
+      "evidence_coverage_pct": 100.0,
+      "stale_provenance_count": 0,
+      "missing_provenance_count": 0,
+      "constraint_violations": [],
+      "timestamp": "2026-08-26T21:03:36.605901+00:00"
+    },
+    "error": null,
+    "timestamp": "2026-08-26T21:03:36.605901+00:00"
+  },
+  {
+    "agent_no": 10,
+    "agent_name": "Reporting / Narrator Agent",
+    "description": "Synthesizes candidates, graph, Pareto frontier, active solution, disruption and critic report into an executive narrative, and separately answers free-form what-if questions by matching the query against structured state fields.",
+    "status": "success",
+    "duration_s": 0.001,
+    "output_summary": "narrative length=1204 chars; what-if Q&A answered=True",
+    "raw_output": {
+      "narrative": "### \ud83c\udf10 Executive Logistics Intelligence Summary \u2014 OptiFlow Test Harness Corridor\nOptiFlow evaluated **5 candidate logistics sites** across the corridor using live Mireye terrain, land-cover, and flood hazard telemetry. **3 sites passed buildability and environmental screening**, while **2 sites were rejected** due to slope, zoning, or flood exposure constraints.\n\n#### \ud83d\udcca Active Network Configuration & Pareto Position\n- **Selected Facilities (1 hubs):** `Puyallup River Confluence Site`\n- **Total Annualized Cost:** `$247,885.90` (Fixed: `$120,000.00`, Transport: `$127,885.90`)\n- **Resilience Score:** `1.000` (100.0% customer demand fulfilled within SLA)\n- **Pareto Frontier Position:** Rank #1 of 3 non-dominated trade-off points.\n\n#### \ud83d\udea8 Active Disruption & Sub-60s Recovery Impact\n- **Disruption Triggered:** 100-Year Green River Valley Inundation (FLOOD)\n- **Direct Facility Impact:** 1 warehouse(s) compromised.\n- **Post-Recovery Demand Retained:** `100.0%`\n- **Added Detour / Recovery Cost:** `$0.00`\n\n#### \ud83d\udee1\ufe0f Critic Agent Evidence & Constraint Audit\n- **Audit Status:** \u2705 PASSED\n- **Mireye Telemetry Coverage:** `100.0%` verified with non-stale response hashes.\n- **Constraint Violations:** `0`",
+      "what_if_answer": {
+        "answer": "**OptiFlow Assistant Response:**\n\nYour query 'Why wasn't Cascade Foothills Steep Site selected?' was evaluated against the current state of **3 candidate warehouses** and **4 customer delivery zones** in the Puget Sound corridor.\n\nCurrent active plan operates **1 distribution centers** with an overall resilience index of `1.000` and total annual cost of `$247,886`."
+      }
+    },
+    "error": null,
+    "timestamp": "2026-08-26T21:03:41.612771+00:00"
+  },
+  {
+    "agent_no": 1,
+    "agent_name": "Controller / Supervisor Agent",
+    "description": "Compiles all of the above into a compiled LangGraph StateGraph (site -> risk -> route -> optimize -> critic -> narrate) and exposes run_full_pipeline() and trigger_disruption() as the two top-level orchestration entry points.",
+    "status": "success",
+    "duration_s": 19.392,
+    "output_summary": "full pipeline + disruption/recovery completed end-to-end; 29 trace events; final active solution cost=$247,886",
+    "raw_output": {
+      "trace_event_count": 29,
+      "critic_flags": []
+    },
+    "error": null,
+    "timestamp": "2026-08-26T21:04:06.013224+00:00"
+  }
+]
