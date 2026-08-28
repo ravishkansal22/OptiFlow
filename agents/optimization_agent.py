@@ -288,19 +288,70 @@ class OptimizationAgent:
         # Bail out here with a clear trace event instead of crashing below on
         # baseline.total_cost / best_balanced.total_cost against a None solution.
         if baseline is None:
+            active_warehouses = [w for w in graph.warehouses if w.status == "active"]
+            total_demand = sum(c.demand_units for c in graph.customers)
+            target_k = inputs.target_warehouses_to_open
+            # Best case is opening the target_k largest sites; if that still cannot
+            # cover demand the model is capacity-bound rather than candidate-bound.
+            top_k_capacity = sum(
+                sorted((w.capacity_units for w in active_warehouses), reverse=True)[:target_k]
+            )
+
+            if not active_warehouses:
+                reason = (
+                    "no warehouse candidates were available to the MILP "
+                    "(none survived Site/Risk screening, or the graph has no active warehouses)"
+                )
+            elif top_k_capacity < total_demand:
+                # When the cap is at or above the number of surviving sites, the
+                # shortlist is the limit, not the cap.
+                if target_k >= len(active_warehouses):
+                    reason = (
+                        f"all {len(active_warehouses)} surviving sites together provide "
+                        f"{top_k_capacity:,.0f} units of capacity against {total_demand:,.0f} "
+                        f"units of demand"
+                    )
+                else:
+                    reason = (
+                        f"opening the {target_k} largest of {len(active_warehouses)} surviving "
+                        f"sites provides {top_k_capacity:,.0f} units of capacity against "
+                        f"{total_demand:,.0f} units of demand"
+                    )
+            else:
+                reason = (
+                    f"the solver found no assignment satisfying capacity, supply and demand "
+                    f"constraints across {len(active_warehouses)} surviving sites at "
+                    f"{target_k} open facilities"
+                )
+
             trace_events.append(AgentTraceEvent(
                 event_id=str(uuid.uuid4()),
                 agent_name=self.name,
                 action="ParetoOptimization",
                 status="error",
-                message="No feasible facility-location solution: zero warehouse candidates were available to the MILP (none survived Site/Risk screening, or the graph has no active warehouses).",
-                details={"frontier_count": 0},
+                message=f"No feasible facility-location solution: {reason}.",
+                details={
+                    "frontier_count": 0,
+                    "active_warehouses": len(active_warehouses),
+                    "target_warehouses_to_open": target_k,
+                    "top_k_capacity": top_k_capacity,
+                    "total_demand": total_demand,
+                },
                 timestamp=""
             ))
             return [], None, trace_events
 
-        # Pick best balanced solution on the frontier (middle-high resilience)
-        best_balanced = min(frontier, key=lambda s: abs(s.resilience_score - 0.85)) if frontier else baseline
+        # Which solution is recommended depends on what the user asked for. The
+        # frontier itself is unchanged -- this only picks the starting point.
+        preference = getattr(inputs, "optimization_preference", "balanced") or "balanced"
+        if not frontier:
+            best_balanced = baseline
+        elif preference == "cost":
+            best_balanced = min(frontier, key=lambda s: s.total_cost)
+        elif preference == "resilience":
+            best_balanced = max(frontier, key=lambda s: s.resilience_score)
+        else:
+            best_balanced = min(frontier, key=lambda s: abs(s.resilience_score - 0.85))
 
         trace_events.append(AgentTraceEvent(
             event_id=str(uuid.uuid4()),
@@ -312,7 +363,8 @@ class OptimizationAgent:
                 "frontier_count": len(frontier),
                 "baseline_cost": baseline.total_cost,
                 "baseline_resilience": baseline.resilience_score,
-                "recommended_resilience": best_balanced.resilience_score
+                "recommended_resilience": best_balanced.resilience_score,
+                "preference": preference
             },
             timestamp=""
         ))

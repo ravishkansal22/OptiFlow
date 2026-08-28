@@ -95,37 +95,77 @@ class RecoveryVerificationAgent:
 
         new_assignments = dict(original_assignments)
         added_recovery_cost = 0.0
-        sla_retained_count = 0
 
+        # Capacity is finite, so a reassignment is only real if the receiving
+        # facility can actually hold the volume. Track what each surviving hub
+        # has left as customers are placed on it.
+        capacity_left: Dict[str, float] = {w.id: w.capacity_units for w in open_surviving_whs}
+
+        total_units = 0.0
+        served_units = 0.0
+        retained_units = 0.0  # served AND inside the zone service window
+
+        lane_time = {
+            (e.source_id, e.target_id): e.travel_time_min
+            for e in mutated_graph.edges
+        }
+
+        affected = []
+        # First pass: customers the disruption did not touch keep their facility
+        # and consume its capacity before anything is moved onto it.
         for cust in mutated_graph.customers:
-            cust_demand = cust.demand_units * disruption.demand_multiplier
-            curr_wh_id = new_assignments.get(cust.id)
+            demand = cust.demand_units * disruption.demand_multiplier
+            total_units += demand
+            wh_id = new_assignments.get(cust.id)
 
-            if curr_wh_id in disabled_wh_set:
-                # Find best surviving warehouse (minimum added transit time & cost)
-                best_wh = None
-                best_cost = float("inf")
-                best_time = float("inf")
+            if wh_id in disabled_wh_set or wh_id not in capacity_left:
+                affected.append((cust, demand))
+                continue
 
-                for s_wh in open_surviving_whs:
-                    # Gateway delta query (hits cache for speed)
-                    routing = await self.gateway.get_routing([s_wh.lat, s_wh.lon], [cust.lat, cust.lon])
-                    if routing.duration_minutes < best_time:
-                        best_time = routing.duration_minutes
-                        best_cost = routing.fuel_cost_usd
-                        best_wh = s_wh
+            take = min(demand, max(0.0, capacity_left[wh_id]))
+            capacity_left[wh_id] -= take
+            served_units += take
+            if lane_time.get((wh_id, cust.id), 0.0) <= cust.service_sla_minutes:
+                retained_units += take
 
-                if best_wh:
-                    new_assignments[cust.id] = best_wh.id
-                    added_recovery_cost += best_cost
-                    if best_time <= cust.service_sla_minutes:
-                        sla_retained_count += 1
-            else:
-                # Unaffected customer
-                sla_retained_count += 1
+        # Second pass: place the affected zones on the fastest surviving facility
+        # that still has room for them.
+        for cust, demand in affected:
+            candidates_by_time = []
+            for s_wh in open_surviving_whs:
+                # Gateway delta query (hits cache for speed)
+                routing = await self.gateway.get_routing([s_wh.lat, s_wh.lon], [cust.lat, cust.lon])
+                candidates_by_time.append((routing.duration_minutes, routing.fuel_cost_usd, s_wh))
+            candidates_by_time.sort(key=lambda row: row[0])
+
+            placed = None
+            for minutes, cost, s_wh in candidates_by_time:
+                if capacity_left.get(s_wh.id, 0.0) >= demand:
+                    placed = (minutes, cost, s_wh, demand)
+                    break
+
+            if placed is None and candidates_by_time:
+                # Nothing can take the whole order; use whichever facility has the
+                # most room left and ship what fits.
+                minutes, cost, s_wh = max(
+                    candidates_by_time, key=lambda row: capacity_left.get(row[2].id, 0.0)
+                )
+                placed = (minutes, cost, s_wh, min(demand, max(0.0, capacity_left.get(s_wh.id, 0.0))))
+
+            if not placed:
+                continue
+
+            minutes, cost, s_wh, shipped = placed
+            new_assignments[cust.id] = s_wh.id
+            capacity_left[s_wh.id] = max(0.0, capacity_left.get(s_wh.id, 0.0) - shipped)
+            added_recovery_cost += cost
+            served_units += shipped
+            if minutes <= cust.service_sla_minutes:
+                retained_units += shipped
 
         elapsed_seconds = time.perf_counter() - start_time
-        demand_retained_pct = round((sla_retained_count / len(mutated_graph.customers)) * 100.0, 1)
+        # Share of demand that is both shipped and inside its delivery window.
+        demand_retained_pct = round((retained_units / total_units) * 100.0, 1) if total_units else 0.0
         norm_recovery_cost = round(min(1.0, added_recovery_cost / max(1.0, active_solution.total_transport_cost * 0.5)), 3)
         
         # Resilience formula: 0.6 * demand_retained/100 + 0.4 * (1 - normalized_recovery_cost)
@@ -145,7 +185,10 @@ class RecoveryVerificationAgent:
             normalized_recovery_cost=norm_recovery_cost,
             resilience_score=recovered_resilience,
             is_baseline_cost_only=False,
-            description=f"Automated warm-start recovery re-solve. {demand_retained_pct}% demand retained within SLA."
+            description=(
+                f"Automated warm-start recovery re-solve. {demand_retained_pct}% of demand shipped "
+                f"within its delivery window across {len(open_surviving_whs)} surviving facilities."
+            )
         )
 
         trace_events.append(AgentTraceEvent(
@@ -157,6 +200,9 @@ class RecoveryVerificationAgent:
             details={
                 "recovery_time_sec": round(elapsed_seconds, 3),
                 "demand_retained_pct": demand_retained_pct,
+                "demand_served_units": round(served_units, 1),
+                "demand_total_units": round(total_units, 1),
+                "reassigned_zones": len(affected),
                 "added_recovery_cost": round(added_recovery_cost, 2),
                 "sub_60s_achieved": (elapsed_seconds < 60.0)
             },

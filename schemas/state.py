@@ -14,6 +14,13 @@ class InputSpec(BaseModel):
     service_radius_minutes: float = 60.0
     budget_limit_usd: float = 2500000.0
     resilience_weight: float = 0.6  # combined = 0.6 * demand_retained + 0.4 * (1 - norm_recovery_cost)
+    # Which solution on the Pareto frontier is recommended once it is built:
+    # "cost" -> the cost-only baseline, "balanced" -> mid-frontier, "resilience"
+    # -> the highest resilience score. Does not change how the frontier is built.
+    optimization_preference: str = "balanced"
+    # Share of demand the plan must serve inside the delivery window. 0 means the
+    # user set no requirement, so the Critic does not test it.
+    min_demand_coverage_pct: float = 0.0
 
 
 class Candidate(BaseModel):
@@ -34,6 +41,10 @@ class Candidate(BaseModel):
     rejection_reasons: List[str] = Field(default_factory=list)
     fixed_operating_cost: float = 120000.0
     capacity_units: float = 15000.0
+    # 0-1 weighted suitability, written by the Risk Agent once hazard scoring is
+    # done. 0 for anything that failed screening.
+    suitability_score: float = 0.0
+    score_components: Dict[str, float] = Field(default_factory=dict)
     provenance: Dict[str, ProvenanceTag] = Field(default_factory=dict)
 
 
@@ -142,6 +153,57 @@ class CriticReport(BaseModel):
     timestamp: str = ""
 
 
+class MetricSnapshot(BaseModel):
+    """
+    How a network actually performs, measured against a concrete graph state.
+
+    Every field is computed from the graph and the solution's own assignments --
+    nothing here is estimated or carried over from a previous measurement.
+    """
+    demand_total_units: float = 0.0
+    demand_served_units: float = 0.0
+    demand_served_pct: float = 0.0
+    on_time_pct: float = 0.0
+    avg_delivery_minutes: float = 0.0
+    transport_cost_usd: float = 0.0
+    fixed_cost_usd: float = 0.0
+    total_cost_usd: float = 0.0
+    customers_served: int = 0
+    customers_partial: int = 0
+    customers_unserved: int = 0
+    active_warehouses: int = 0
+    disrupted_lanes: int = 0
+
+
+class ImpactReport(BaseModel):
+    """What a disruption did to the network, before any recovery is attempted."""
+    disruption_id: str
+    disruption_type: str
+    title: str
+    before: MetricSnapshot
+    after: MetricSnapshot
+    failed_warehouse_ids: List[str] = Field(default_factory=list)
+    disrupted_edge_ids: List[str] = Field(default_factory=list)
+    affected_customer_ids: List[str] = Field(default_factory=list)
+    explanation: str = ""
+    timestamp: str = ""
+
+
+class RecoveryReport(BaseModel):
+    """What the recovery re-solve changed, measured against the disrupted state."""
+    disruption_id: str
+    before: MetricSnapshot
+    after: MetricSnapshot
+    recovery_seconds: float = 0.0
+    customers_reassigned: int = 0
+    routes_changed: int = 0
+    warehouses_activated: List[str] = Field(default_factory=list)
+    warehouses_deactivated: List[str] = Field(default_factory=list)
+    added_cost_usd: float = 0.0
+    summary: str = ""
+    timestamp: str = ""
+
+
 class AgentTraceEvent(BaseModel):
     event_id: str
     agent_name: str
@@ -162,6 +224,12 @@ class NetworkState(TypedDict, total=False):
     frontier: List[NetworkSolution]  # Pareto-optimal solutions from NSGA-II
     active_solution_id: str
     disruption_log: List[Disruption]
+    impact_report: Optional[ImpactReport]      # latest disruption, before recovery
+    recovery_report: Optional[RecoveryReport]  # latest recovery re-solve
+    # Snapshot taken before the first disruption so the network can be restored
+    # and another scenario run against the same starting point.
+    pre_disruption_graph: Optional[LogisticsGraph]
+    pre_disruption_solution_id: str
     critic_flags: List[str]       # evidence / constraint violations
     critic_report: Optional[CriticReport]
     narrative: str                # LLM-generated explanation of current state
