@@ -12,6 +12,16 @@ class ProvenanceTag(BaseModel):
     response_hash: str = Field(..., description="SHA-256 hash or unique ID of the returned payload")
     cached: bool = Field(default=False, description="True if response was served from cache")
     latency_ms: float = Field(default=0.0, description="Latency of the Mireye call in milliseconds")
+    live: bool = Field(
+        default=False,
+        description="True only if this value originated from a successful Mireye API response. "
+                    "False means it came from the local simulation model."
+    )
+    source: str = Field(
+        default="simulation",
+        description="Where the value came from: 'live', 'cache' (of a live value), "
+                    "'cache-simulation' (of a simulated value), or 'simulation'."
+    )
 
 
 class MireyeTerrainResponse(BaseModel):

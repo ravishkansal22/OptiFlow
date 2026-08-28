@@ -1,84 +1,141 @@
-import { AgentTraceEvent } from '../types';
+import type { AgentTraceEvent } from '../types';
+import { API_BASE } from './api';
 
-export type TraceCallback = (event: AgentTraceEvent) => void;
-export type SignalCallback = (data: any) => void;
+export type ConnectionStatus = 'connecting' | 'open' | 'closed';
 
-class WebSocketClient {
+/** Non-trace control messages broadcast by the backend. */
+export interface ServerSignal {
+  type:
+    | 'analysis_complete'
+    | 'pipeline_complete'
+    | 'pipeline_error'
+    | 'disruption_applied'
+    | 'disruption_resolved'
+    | 'network_restored'
+    | 'solution_switched'
+    | 'state_reset'
+    | string;
+  [k: string]: any;
+}
+
+function resolveSocketUrl(): string {
+  const base = API_BASE || window.location.origin;
+  const url = new URL(base, window.location.origin);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  url.pathname = '/ws/trace';
+  url.search = '';
+  return url.toString();
+}
+
+/**
+ * Thin auto-reconnecting client over /ws/trace.
+ * Trace events are de-duplicated by event_id, because the backend replays its
+ * whole buffer as `initial_trace` on every (re)connect.
+ */
+class TraceSocket {
   private ws: WebSocket | null = null;
-  private traceListeners: Set<TraceCallback> = new Set();
-  private signalListeners: Set<SignalCallback> = new Set();
-  private reconnectTimeout: number | null = null;
-  private url: string;
+  private traceListeners = new Set<(e: AgentTraceEvent) => void>();
+  private signalListeners = new Set<(s: ServerSignal) => void>();
+  private statusListeners = new Set<(s: ConnectionStatus) => void>();
+  private reconnectTimer: number | null = null;
+  private keepAliveTimer: number | null = null;
+  private backoff = 1000;
+  private seen = new Set<string>();
 
-  constructor() {
-    const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.hostname || 'localhost';
-    this.url = `${wsProto}//${host}:8000/ws/trace`;
-  }
+  status: ConnectionStatus = 'closed';
 
-  public connect() {
-    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+  connect() {
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
+
+    this.setStatus('connecting');
+    try {
+      this.ws = new WebSocket(resolveSocketUrl());
+    } catch {
+      this.scheduleReconnect();
       return;
     }
 
-    try {
-      this.ws = new WebSocket(this.url);
+    this.ws.onopen = () => {
+      this.backoff = 1000;
+      this.setStatus('open');
+      // The backend echoes "pong"; this keeps intermediaries from idling us out.
+      this.keepAliveTimer = window.setInterval(() => {
+        if (this.ws?.readyState === WebSocket.OPEN) this.ws.send('ping');
+      }, 25000);
+    };
 
-      this.ws.onopen = () => {
-        console.log('[OptiFlow WS] Connected to live agent trace stream.');
-      };
+    this.ws.onmessage = (evt) => {
+      if (evt.data === 'pong') return;
+      let payload: any;
+      try {
+        payload = JSON.parse(evt.data);
+      } catch {
+        return;
+      }
 
-      this.ws.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(event.data);
-          if (payload.type === 'agent_trace' && payload.event) {
-            this.traceListeners.forEach((fn) => fn(payload.event));
-          } else if (payload.type === 'initial_trace' && Array.isArray(payload.events)) {
-            payload.events.forEach((ev: AgentTraceEvent) => {
-              this.traceListeners.forEach((fn) => fn(ev));
-            });
-          } else {
-            this.signalListeners.forEach((fn) => fn(payload));
-          }
-        } catch (e) {
-          console.error('[OptiFlow WS] Failed to parse WebSocket message:', e);
-        }
-      };
+      if (payload.type === 'agent_trace' && payload.event) {
+        this.emitTrace(payload.event);
+      } else if (payload.type === 'initial_trace' && Array.isArray(payload.events)) {
+        payload.events.forEach((e: AgentTraceEvent) => this.emitTrace(e));
+      } else {
+        this.signalListeners.forEach((fn) => fn(payload));
+      }
+    };
 
-      this.ws.onclose = () => {
-        console.warn('[OptiFlow WS] Disconnected. Reconnecting in 3s...');
-        this.scheduleReconnect();
-      };
-
-      this.ws.onerror = () => {
-        this.ws?.close();
-      };
-    } catch (err) {
+    this.ws.onclose = () => {
+      this.clearKeepAlive();
+      this.setStatus('closed');
       this.scheduleReconnect();
-    }
+    };
+
+    this.ws.onerror = () => this.ws?.close();
+  }
+
+  /** Forget replayed-event history so a fresh run starts from a clean trace. */
+  resetHistory() {
+    this.seen.clear();
+  }
+
+  private emitTrace(event: AgentTraceEvent) {
+    if (!event?.event_id || this.seen.has(event.event_id)) return;
+    this.seen.add(event.event_id);
+    this.traceListeners.forEach((fn) => fn(event));
+  }
+
+  private setStatus(s: ConnectionStatus) {
+    this.status = s;
+    this.statusListeners.forEach((fn) => fn(s));
+  }
+
+  private clearKeepAlive() {
+    if (this.keepAliveTimer) window.clearInterval(this.keepAliveTimer);
+    this.keepAliveTimer = null;
   }
 
   private scheduleReconnect() {
-    if (this.reconnectTimeout) return;
-    this.reconnectTimeout = window.setTimeout(() => {
-      this.reconnectTimeout = null;
+    if (this.reconnectTimer) return;
+    this.reconnectTimer = window.setTimeout(() => {
+      this.reconnectTimer = null;
       this.connect();
-    }, 3000);
+    }, this.backoff);
+    this.backoff = Math.min(this.backoff * 1.8, 15000);
   }
 
-  public onTrace(fn: TraceCallback) {
+  onTrace(fn: (e: AgentTraceEvent) => void) {
     this.traceListeners.add(fn);
-    return () => {
-      this.traceListeners.delete(fn);
-    };
+    return () => void this.traceListeners.delete(fn);
   }
 
-  public onSignal(fn: SignalCallback) {
+  onSignal(fn: (s: ServerSignal) => void) {
     this.signalListeners.add(fn);
-    return () => {
-      this.signalListeners.delete(fn);
-    };
+    return () => void this.signalListeners.delete(fn);
+  }
+
+  onStatus(fn: (s: ConnectionStatus) => void) {
+    this.statusListeners.add(fn);
+    fn(this.status);
+    return () => void this.statusListeners.delete(fn);
   }
 }
 
-export const wsClient = new WebSocketClient();
+export const traceSocket = new TraceSocket();

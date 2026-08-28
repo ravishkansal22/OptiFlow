@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Optional, Tuple
 from schemas.state import (
     NetworkState,
     NetworkSolution,
@@ -27,7 +27,8 @@ class CriticAgent:
         candidates: List[Candidate],
         graph: LogisticsGraph,
         solution: NetworkSolution,
-        budget_limit_usd: float = 3000000.0
+        budget_limit_usd: float = 3000000.0,
+        min_demand_coverage_pct: float = 0.0
     ) -> Tuple[CriticReport, List[AgentTraceEvent]]:
         trace_events = []
         flags = []
@@ -90,6 +91,19 @@ class CriticAgent:
             )
         else:
             passed_checks += 1
+
+        # 3b. Delivery Requirement Verification
+        # demand_retained_pct is the share of demand the optimizer measured as
+        # arriving inside each zone service_sla_minutes.
+        if min_demand_coverage_pct > 0.0:
+            total_checks += 1
+            if solution.demand_retained_pct < min_demand_coverage_pct:
+                violations.append(
+                    f"Delivery Requirement Unmet: {solution.demand_retained_pct:.1f}% of demand arrives "
+                    f"within the delivery window, below the {min_demand_coverage_pct:.1f}% required"
+                )
+            else:
+                passed_checks += 1
 
         # 4. Graph Edge Provenance Verification
         missing_edge_prov = 0

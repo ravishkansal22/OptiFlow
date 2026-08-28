@@ -2,6 +2,7 @@ import uuid
 from typing import List, Dict, Any, Tuple
 from schemas.state import NetworkState, Candidate, AgentTraceEvent
 from agents.mireye_gateway_agent import MireyeGatewayAgent
+from agents.site_scoring import score_candidates
 
 
 class RiskAgent:
@@ -16,9 +17,20 @@ class RiskAgent:
         self.gateway = gateway
         self.name = "Risk Agent"
 
-    async def execute(self, candidates: List[Candidate], raw_seeds_map: Dict[str, Any]) -> Tuple[List[Candidate], List[AgentTraceEvent]]:
+    async def execute(
+        self,
+        candidates: List[Candidate],
+        raw_seeds_map: Dict[str, Any],
+        on_event=None
+    ) -> Tuple[List[Candidate], List[AgentTraceEvent]]:
         trace_events = []
         updated_candidates: List[Candidate] = []
+
+        def emit(event: AgentTraceEvent):
+            """Record the event, and hand it straight on so the UI sees it now."""
+            trace_events.append(event)
+            if on_event:
+                on_event(event)
 
         start_event = AgentTraceEvent(
             event_id=str(uuid.uuid4()),
@@ -28,7 +40,7 @@ class RiskAgent:
             message=f"Beginning geospatial hazard and flood exposure scoring for {len(candidates)} candidates.",
             timestamp=""
         )
-        trace_events.append(start_event)
+        emit(start_event)
 
         for cand in candidates:
             # If already rejected in site screening, keep rejection reason and skip flood scoring
@@ -63,7 +75,7 @@ class RiskAgent:
 
             updated_candidates.append(cand)
 
-            trace_events.append(AgentTraceEvent(
+            emit(AgentTraceEvent(
                 event_id=str(uuid.uuid4()),
                 agent_name=self.name,
                 action="CandidateRiskEvaluated",
@@ -81,8 +93,11 @@ class RiskAgent:
                 provenance=flood_resp.provenance
             ))
 
+        # Rank the survivors against one another now that every risk value is in.
+        score_candidates(updated_candidates)
+
         qualified_count = sum(1 for c in updated_candidates if c.passed_screening)
-        trace_events.append(AgentTraceEvent(
+        emit(AgentTraceEvent(
             event_id=str(uuid.uuid4()),
             agent_name=self.name,
             action="HazardScoring",

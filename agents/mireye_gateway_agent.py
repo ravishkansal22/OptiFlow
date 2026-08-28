@@ -1,3 +1,5 @@
+import asyncio
+import logging
 import os
 import time
 import json
@@ -16,6 +18,8 @@ from schemas.mireye import (
     MireyeHazardPolygon,
     MireyeHazardLayerResponse
 )
+
+log = logging.getLogger("optiflow.mireye")
 
 # Base32 characters for Geohash encoding
 GEOHASH_BASE32 = "0123456789bcdefghjkmnpqrstuvwxyz"
@@ -58,6 +62,19 @@ def encode_geohash(lat: float, lon: float, precision: int = 7) -> str:
     return "".join(geohash)
 
 
+def _brief(body: Dict[str, Any]) -> str:
+    """Compact one-line description of a request body for logs."""
+    if not isinstance(body, dict):
+        return ""
+    if "lat" in body and "lng" in body:
+        return f"({body['lat']:.4f},{body['lng']:.4f} {body.get('preset', '')})"
+    if "origins" in body:
+        o = (body.get("origins") or [""])[0]
+        d = (body.get("destinations") or [""])[0]
+        return f"({o} -> {d})"
+    return ""
+
+
 def haversine_distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Calculates great-circle distance between two points in km."""
     r = 6371.0
@@ -66,6 +83,55 @@ def haversine_distance_km(lat1: float, lon1: float, lat2: float, lon2: float) ->
     a = math.sin(dlat / 2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2)**2
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return r * c
+
+
+class RateLimiter:
+    """
+    Async token bucket. Every outbound HTTP request must acquire a token, so the
+    gateway can never exceed `per_minute` requests in any rolling minute no
+    matter how many agents or requests are running concurrently.
+    """
+
+    def __init__(self, per_minute: int):
+        self.per_minute = max(1, per_minute)
+        self.capacity = float(self.per_minute)
+        self.tokens = float(self.per_minute)
+        self.refill_per_sec = self.per_minute / 60.0
+        self.updated = time.monotonic()
+        self._lock = asyncio.Lock()
+        self.total_waits = 0
+        self.total_wait_seconds = 0.0
+
+    async def acquire(self) -> float:
+        """Blocks until a token is free. Returns how long it waited, in seconds."""
+        waited = 0.0
+        while True:
+            async with self._lock:
+                now = time.monotonic()
+                self.tokens = min(
+                    self.capacity, self.tokens + (now - self.updated) * self.refill_per_sec
+                )
+                self.updated = now
+                if self.tokens >= 1.0:
+                    self.tokens -= 1.0
+                    if waited > 0:
+                        self.total_waits += 1
+                        self.total_wait_seconds += waited
+                    return waited
+                deficit = 1.0 - self.tokens
+                sleep_for = max(deficit / self.refill_per_sec, 0.01)
+            await asyncio.sleep(sleep_for)
+            waited += sleep_for
+
+    def snapshot(self) -> Dict[str, Any]:
+        now = time.monotonic()
+        tokens = min(self.capacity, self.tokens + (now - self.updated) * self.refill_per_sec)
+        return {
+            "limit_per_minute": self.per_minute,
+            "tokens_available": round(tokens, 1),
+            "times_throttled": self.total_waits,
+            "total_wait_seconds": round(self.total_wait_seconds, 1),
+        }
 
 
 class MireyeGatewayAgent:
@@ -98,6 +164,95 @@ class MireyeGatewayAgent:
         self.memory_cache: Dict[str, Dict[str, Any]] = {}
         self.call_history: List[Dict[str, Any]] = []
         self.subscribers = []
+        # Records, per cache key, whether the cached value came from the live API.
+        # Kept beside the payload so cached dicts stay clean model input.
+        self._live_flags: Dict[str, bool] = {}
+        # When set, a failed live call raises instead of silently simulating.
+        _strict_env = os.getenv("MIREYE_STRICT_LIVE", "").strip().lower()
+        _has_key = bool(self.api_key and not self.api_key.startswith("mock"))
+        self.strict_live = (
+            _strict_env in {"1", "true", "yes", "on"}
+            if _strict_env
+            else _has_key  # default: refuse to fake data when a key is present
+        )
+        # Counters so callers can report how much of a run was genuinely live.
+        self.live_calls = 0
+        self.simulated_calls = 0
+        self.last_live_error: Optional[str] = None
+        # A first fetch for a cold coordinate can take well over 10s; later calls
+        # for the same point return in under a second. Too low a ceiling here is
+        # the difference between live data and a silent simulation fallback.
+        self.request_timeout = float(os.getenv("MIREYE_TIMEOUT", "30"))
+        self.max_attempts = max(1, int(os.getenv("MIREYE_MAX_ATTEMPTS", "2")))
+        # Mireye allows 300/min; stay under it with headroom for retries.
+        self.limiter = RateLimiter(int(os.getenv("MIREYE_MAX_CALLS_PER_MIN", "250")))
+
+    def clear_cache(self) -> Dict[str, int]:
+        """Drops every cached value, live flag and call record. Returns what was removed."""
+        removed = {
+            "memory_entries": len(self.memory_cache),
+            "call_history": len(self.call_history),
+            "redis_keys": 0,
+        }
+        if self.redis_client:
+            try:
+                keys = list(self.redis_client.scan_iter(match="mireye:*"))
+                if keys:
+                    self.redis_client.delete(*keys)
+                removed["redis_keys"] = len(keys)
+            except Exception:
+                pass
+        self.memory_cache.clear()
+        self._live_flags.clear()
+        self.call_history.clear()
+        self.live_calls = 0
+        self.simulated_calls = 0
+        self.last_live_error = None
+        return removed
+
+    def data_source_summary(self) -> Dict[str, Any]:
+        """How much of what has been served so far actually came from the API."""
+        total = self.live_calls + self.simulated_calls
+        return {
+            "api_key_configured": bool(self.api_key and not self.api_key.startswith("mock")),
+            "strict_live": self.strict_live,
+            "base_url": self.base_url,
+            "live_values": self.live_calls,
+            "simulated_values": self.simulated_calls,
+            "total_values": total,
+            "live_pct": round((self.live_calls / total) * 100, 1) if total else 0.0,
+            "cached_entries": len(self.memory_cache),
+            "last_live_error": self.last_live_error,
+            "request_timeout_s": self.request_timeout,
+            "max_attempts": self.max_attempts,
+            "rate_limit": self.limiter.snapshot(),
+        }
+
+    def _refuse_simulation(
+        self, endpoint: str, detail: str, reason: str, fatal: bool = True
+    ) -> None:
+        """
+        Called at every simulation fallback that has a real live path.
+
+        A 200 response with a missing or failed field lands here just like a
+        network error does, so strict mode covers both rather than only the
+        obvious failure.
+
+        `fatal` is False for routing: the API regularly returns a leg it cannot
+        drive (flag "unreachable_or_snapped") among hundreds that resolve fine.
+        Aborting a whole run for one such leg is disproportionate, and an
+        estimated travel time does not fabricate a site verdict the way a
+        simulated slope or flood reading would. It is still counted and tagged
+        as non-live so the totals stay honest.
+        """
+        if self.strict_live and fatal:
+            log.error("STRICT %s %s -> refusing simulated values: %s", endpoint, detail, reason)
+            raise RuntimeError(
+                f"Live Mireye data unavailable for {endpoint} {detail}: {reason}. "
+                f"Strict mode is on, so simulated values were not substituted. "
+                f"Set MIREYE_STRICT_LIVE=0 to allow the fallback."
+            )
+        log.warning("SIM   %s %s -> simulated (%s)", endpoint, detail, reason)
 
     def _get_cache_key(self, layer: str, lat: float, lon: float, radius: float = 0.0) -> str:
         """Cache key = (layer, geohash-7, radius) as specified in the OptiFlow build plan."""
@@ -110,7 +265,7 @@ class MireyeGatewayAgent:
         gh_d = encode_geohash(destination[0], destination[1], precision=7)
         return f"mireye:routing:{gh_o}:{gh_d}"
 
-    def _create_provenance_tag(self, endpoint: str, params: Dict[str, Any], payload: Any, cached: bool, latency_ms: float) -> ProvenanceTag:
+    def _create_provenance_tag(self, endpoint: str, params: Dict[str, Any], payload: Any, cached: bool, latency_ms: float, live: bool = False) -> ProvenanceTag:
         # Strip any existing provenance before computing semantic response hash
         clean_payload = dict(payload) if isinstance(payload, dict) else payload
         if isinstance(clean_payload, dict) and "provenance" in clean_payload:
@@ -118,19 +273,29 @@ class MireyeGatewayAgent:
 
         raw_str = json.dumps(clean_payload, sort_keys=True, default=str)
         resp_hash = hashlib.sha256(raw_str.encode("utf-8")).hexdigest()[:16]
+        source = ("cache" if live else "cache-simulation") if cached else ("live" if live else "simulation")
         tag = ProvenanceTag(
             endpoint=endpoint,
             params=params,
             timestamp=datetime.now(timezone.utc).isoformat(),
             response_hash=resp_hash,
             cached=cached,
-            latency_ms=round(latency_ms, 2)
+            latency_ms=round(latency_ms, 2),
+            live=live,
+            source=source
         )
+        if not cached:
+            if live:
+                self.live_calls += 1
+            else:
+                self.simulated_calls += 1
         self.call_history.append({
             "endpoint": endpoint,
             "params": params,
             "provenance": tag.model_dump(),
-            "timestamp": tag.timestamp
+            "timestamp": tag.timestamp,
+            "live": live,
+            "source": source
         })
         return tag
 
@@ -144,15 +309,16 @@ class MireyeGatewayAgent:
                 pass
         return self.memory_cache.get(key)
 
-    def _write_cache(self, key: str, value: Dict[str, Any], ttl_seconds: int = 86400):
+    def _write_cache(self, key: str, value: Dict[str, Any], ttl_seconds: int = 86400, live: bool = False):
         if self.redis_client:
             try:
                 self.redis_client.setex(key, ttl_seconds, json.dumps(value))
             except Exception:
                 pass
         self.memory_cache[key] = value
+        self._live_flags[key] = live
 
-    async def _post_json(self, path: str, body: Dict[str, Any], timeout: float = 10.0) -> Optional[Dict[str, Any]]:
+    async def _post_json(self, path: str, body: Dict[str, Any], timeout: Optional[float] = None) -> Optional[Dict[str, Any]]:
         """
         Shared low-level POST helper for every real Mireye v1 endpoint. Mireye's actual
         API is JSON-body POST for every data endpoint (never GET+query-params), and
@@ -166,20 +332,80 @@ class MireyeGatewayAgent:
         """
         if not (self.api_key and not self.api_key.startswith("mock")):
             return None
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                resp = await client.post(
-                    f"{self.base_url}{path}",
-                    json=body,
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json"
-                    }
-                )
+
+        timeout = timeout or self.request_timeout
+
+        # Retry transient failures before giving up. Without this a single slow
+        # response silently substitutes simulated values AND caches them, so one
+        # bad moment poisons that coordinate for the whole cache TTL.
+        last_error: Optional[str] = None
+        for attempt in range(self.max_attempts):
+            # Hard cap: never exceed the configured calls-per-minute, however
+            # many agents or requests are in flight.
+            waited = await self.limiter.acquire()
+            if waited > 0.05:
+                log.info("rate limit: waited %.1fs for a token (cap %d/min)", waited, self.limiter.per_minute)
+
+            started = time.perf_counter()
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    resp = await client.post(
+                        f"{self.base_url}{path}",
+                        json=body,
+                        headers={
+                            "Authorization": f"Bearer {self.api_key}",
+                            "Content-Type": "application/json"
+                        }
+                    )
                 if resp.status_code == 200:
+                    log.info(
+                        "LIVE  %s %s -> 200 in %.0fms",
+                        path, _brief(body), (time.perf_counter() - started) * 1000
+                    )
                     return resp.json()
-        except Exception:
-            pass
+
+                # Surface the API's own explanation -- "US coordinates only" is
+                # far more actionable than a bare status code.
+                last_error = f"HTTP {resp.status_code}"
+                try:
+                    detail = resp.json().get("detail")
+                    if isinstance(detail, dict):
+                        code = detail.get("error")
+                        msg = detail.get("message")
+                        last_error = f"{code}: {msg}" if code and msg else (msg or code or last_error)
+                    elif isinstance(detail, str):
+                        last_error = detail
+                except Exception:
+                    pass
+
+                log.warning(
+                    "FAIL  %s %s -> %s (attempt %d/%d)",
+                    path, _brief(body), last_error, attempt + 1, self.max_attempts
+                )
+
+                # Client errors other than rate limiting will not fix themselves.
+                if resp.status_code < 500 and resp.status_code != 429:
+                    break
+            except Exception as exc:
+                last_error = type(exc).__name__
+                log.warning(
+                    "FAIL  %s %s -> %s after %.0fms (attempt %d/%d)",
+                    path, _brief(body), last_error,
+                    (time.perf_counter() - started) * 1000, attempt + 1, self.max_attempts
+                )
+
+            if attempt < self.max_attempts - 1:
+                await asyncio.sleep(0.6 * (2 ** attempt))
+
+        self.last_live_error = last_error
+        if self.strict_live:
+            log.error("STRICT %s %s -> giving up: %s", path, _brief(body), last_error)
+            raise RuntimeError(
+                f"Live Mireye data unavailable for {path} {_brief(body)}: "
+                f"{last_error or 'no response'}. Strict mode is on, so simulated values "
+                f"were not substituted. Set MIREYE_STRICT_LIVE=0 to allow the fallback."
+            )
+        log.warning("SIM   %s %s -> falling back to simulation (%s)", path, _brief(body), last_error)
         return None
 
     @staticmethod
@@ -208,7 +434,7 @@ class MireyeGatewayAgent:
 
         if cached_data:
             latency_ms = (time.perf_counter() - start_time) * 1000
-            prov = self._create_provenance_tag(endpoint, params, cached_data, cached=True, latency_ms=latency_ms)
+            prov = self._create_provenance_tag(endpoint, params, cached_data, cached=True, latency_ms=latency_ms, live=self._live_flags.get(cache_key, False))
             cached_data["provenance"] = prov
             return MireyeTerrainResponse(**cached_data)
 
@@ -237,10 +463,17 @@ class MireyeGatewayAgent:
                 }
 
                 latency_ms = (time.perf_counter() - start_time) * 1000
-                prov = self._create_provenance_tag(endpoint, params, raw, cached=False, latency_ms=latency_ms)
+                prov = self._create_provenance_tag(endpoint, params, raw, cached=False, latency_ms=latency_ms, live=True)
                 raw["provenance"] = prov
-                self._write_cache(cache_key, raw)
+                self._write_cache(cache_key, raw, live=True)
                 return MireyeTerrainResponse(**raw)
+
+        self._refuse_simulation(
+            endpoint,
+            f"({lat:.4f},{lon:.4f} terrain)",
+            "response was missing elevation or slope_degrees" if live
+            else (self.last_live_error or "no response"),
+        )
 
         # High-Fidelity Local Mireye Geospatial Model Fallback
         elev = known_base.get("base_elevation_m", 25.0) if known_base else 25.0 + math.sin(lat * 50) * 15
@@ -260,9 +493,9 @@ class MireyeGatewayAgent:
         }
 
         latency_ms = (time.perf_counter() - start_time) * 1000
-        prov = self._create_provenance_tag(endpoint, params, raw_result, cached=False, latency_ms=latency_ms)
+        prov = self._create_provenance_tag(endpoint, params, raw_result, cached=False, latency_ms=latency_ms, live=False)
         raw_result["provenance"] = prov
-        self._write_cache(cache_key, raw_result)
+        self._write_cache(cache_key, raw_result, live=False)
         return MireyeTerrainResponse(**raw_result)
 
     async def get_land_cover_buildings(self, lat: float, lon: float, radius_m: float = 500.0, known_base: Optional[Dict[str, Any]] = None) -> MireyeLandCoverResponse:
@@ -285,7 +518,7 @@ class MireyeGatewayAgent:
 
         if cached_data:
             latency_ms = (time.perf_counter() - start_time) * 1000
-            prov = self._create_provenance_tag(endpoint, params, cached_data, cached=True, latency_ms=latency_ms)
+            prov = self._create_provenance_tag(endpoint, params, cached_data, cached=True, latency_ms=latency_ms, live=self._live_flags.get(cache_key, False))
             cached_data["provenance"] = prov
             return MireyeLandCoverResponse(**cached_data)
 
@@ -334,10 +567,17 @@ class MireyeGatewayAgent:
                 }
 
                 latency_ms = (time.perf_counter() - start_time) * 1000
-                prov = self._create_provenance_tag(endpoint, params, raw, cached=False, latency_ms=latency_ms)
+                prov = self._create_provenance_tag(endpoint, params, raw, cached=False, latency_ms=latency_ms, live=True)
                 raw["provenance"] = prov
-                self._write_cache(cache_key, raw)
+                self._write_cache(cache_key, raw, live=True)
                 return MireyeLandCoverResponse(**raw)
+
+        self._refuse_simulation(
+            endpoint,
+            f"({lat:.4f},{lon:.4f} land_cover)",
+            "response was missing land cover fields" if live
+            else (self.last_live_error or "no response"),
+        )
 
         land_cover = known_base.get("land_cover", "Industrial") if known_base else "Industrial"
         parcel_sqm = known_base.get("parcel_sqm", 60000.0) if known_base else 55000.0
@@ -355,9 +595,9 @@ class MireyeGatewayAgent:
         }
 
         latency_ms = (time.perf_counter() - start_time) * 1000
-        prov = self._create_provenance_tag(endpoint, params, raw_result, cached=False, latency_ms=latency_ms)
+        prov = self._create_provenance_tag(endpoint, params, raw_result, cached=False, latency_ms=latency_ms, live=False)
         raw_result["provenance"] = prov
-        self._write_cache(cache_key, raw_result)
+        self._write_cache(cache_key, raw_result, live=False)
         return MireyeLandCoverResponse(**raw_result)
 
     async def get_flood_hazard(self, lat: float, lon: float, known_base: Optional[Dict[str, Any]] = None) -> MireyeFloodResponse:
@@ -373,7 +613,7 @@ class MireyeGatewayAgent:
 
         if cached_data:
             latency_ms = (time.perf_counter() - start_time) * 1000
-            prov = self._create_provenance_tag(endpoint, params, cached_data, cached=True, latency_ms=latency_ms)
+            prov = self._create_provenance_tag(endpoint, params, cached_data, cached=True, latency_ms=latency_ms, live=self._live_flags.get(cache_key, False))
             cached_data["provenance"] = prov
             return MireyeFloodResponse(**cached_data)
 
@@ -427,10 +667,17 @@ class MireyeGatewayAgent:
                 }
 
                 latency_ms = (time.perf_counter() - start_time) * 1000
-                prov = self._create_provenance_tag(endpoint, params, raw, cached=False, latency_ms=latency_ms)
+                prov = self._create_provenance_tag(endpoint, params, raw, cached=False, latency_ms=latency_ms, live=True)
                 raw["provenance"] = prov
-                self._write_cache(cache_key, raw)
+                self._write_cache(cache_key, raw, live=True)
                 return MireyeFloodResponse(**raw)
+
+        self._refuse_simulation(
+            endpoint,
+            f"({lat:.4f},{lon:.4f} flood_risk)",
+            "response was missing flood fields" if live
+            else (self.last_live_error or "no response"),
+        )
 
         elev = known_base.get("base_elevation_m", 25.0) if known_base else 25.0
 
@@ -468,9 +715,9 @@ class MireyeGatewayAgent:
         }
 
         latency_ms = (time.perf_counter() - start_time) * 1000
-        prov = self._create_provenance_tag(endpoint, params, raw_result, cached=False, latency_ms=latency_ms)
+        prov = self._create_provenance_tag(endpoint, params, raw_result, cached=False, latency_ms=latency_ms, live=False)
         raw_result["provenance"] = prov
-        self._write_cache(cache_key, raw_result)
+        self._write_cache(cache_key, raw_result, live=False)
         return MireyeFloodResponse(**raw_result)
 
     async def get_routing(self, origin: List[float], destination: List[float], mode: str = "heavy_truck") -> MireyeRoutingResponse:
@@ -486,7 +733,7 @@ class MireyeGatewayAgent:
 
         if cached_data:
             latency_ms = (time.perf_counter() - start_time) * 1000
-            prov = self._create_provenance_tag(endpoint, params, cached_data, cached=True, latency_ms=latency_ms)
+            prov = self._create_provenance_tag(endpoint, params, cached_data, cached=True, latency_ms=latency_ms, live=self._live_flags.get(cache_key, False))
             cached_data["provenance"] = prov
             return MireyeRoutingResponse(**cached_data)
 
@@ -532,9 +779,9 @@ class MireyeGatewayAgent:
                     }
 
                     latency_ms = (time.perf_counter() - start_time) * 1000
-                    prov = self._create_provenance_tag(endpoint, params, raw, cached=False, latency_ms=latency_ms)
+                    prov = self._create_provenance_tag(endpoint, params, raw, cached=False, latency_ms=latency_ms, live=True)
                     raw["provenance"] = prov
-                    self._write_cache(cache_key, raw)
+                    self._write_cache(cache_key, raw, live=True)
                     return MireyeRoutingResponse(**raw)
 
         # Haversine distance with real-world road winding multiplier (1.28x - 1.42x)
@@ -542,6 +789,14 @@ class MireyeGatewayAgent:
         road_distance_km = max(1.5, h_dist * 1.32)
 
         # Average commercial truck speed in Puget Sound corridor: 55 km/h highway, 30 km/h urban
+        self._refuse_simulation(
+            endpoint,
+            f"({origin[0]:.4f},{origin[1]:.4f} -> {destination[0]:.4f},{destination[1]:.4f})",
+            "leg unreachable or missing duration" if live
+            else (self.last_live_error or "no response"),
+            fatal=False,
+        )
+
         avg_speed_kmh = 48.0
         duration_minutes = (road_distance_km / avg_speed_kmh) * 60.0 + 4.0  # +4 min terminal maneuvering
 
@@ -574,9 +829,9 @@ class MireyeGatewayAgent:
         }
 
         latency_ms = (time.perf_counter() - start_time) * 1000
-        prov = self._create_provenance_tag(endpoint, params, raw_result, cached=False, latency_ms=latency_ms)
+        prov = self._create_provenance_tag(endpoint, params, raw_result, cached=False, latency_ms=latency_ms, live=False)
         raw_result["provenance"] = prov
-        self._write_cache(cache_key, raw_result)
+        self._write_cache(cache_key, raw_result, live=False)
         return MireyeRoutingResponse(**raw_result)
 
     async def get_regional_hazards(self, region_name: str, bounding_box: List[float], known_hazards: Optional[List[Dict[str, Any]]] = None) -> MireyeHazardLayerResponse:
@@ -602,7 +857,7 @@ class MireyeGatewayAgent:
 
         if cached_data:
             latency_ms = (time.perf_counter() - start_time) * 1000
-            prov = self._create_provenance_tag(endpoint, params, cached_data, cached=True, latency_ms=latency_ms)
+            prov = self._create_provenance_tag(endpoint, params, cached_data, cached=True, latency_ms=latency_ms, live=self._live_flags.get(cache_key, False))
             cached_data["provenance"] = prov
             return MireyeHazardLayerResponse(**cached_data)
 
@@ -632,7 +887,7 @@ class MireyeGatewayAgent:
         }
 
         latency_ms = (time.perf_counter() - start_time) * 1000
-        prov = self._create_provenance_tag(endpoint, params, raw_result, cached=False, latency_ms=latency_ms)
+        prov = self._create_provenance_tag(endpoint, params, raw_result, cached=False, latency_ms=latency_ms, live=False)
         raw_result["provenance"] = prov
-        self._write_cache(cache_key, raw_result)
+        self._write_cache(cache_key, raw_result, live=False)
         return MireyeHazardLayerResponse(**raw_result)

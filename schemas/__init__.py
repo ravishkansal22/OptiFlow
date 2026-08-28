@@ -11,7 +11,10 @@ from .state import (
     Disruption,
     FlowRecord,
     CriticReport,
-    AgentTraceEvent
+    AgentTraceEvent,
+    MetricSnapshot,
+    ImpactReport,
+    RecoveryReport
 )
 from .mireye import (
     ProvenanceTag,
@@ -36,6 +39,9 @@ __all__ = [
     "FlowRecord",
     "CriticReport",
     "AgentTraceEvent",
+    "MetricSnapshot",
+    "ImpactReport",
+    "RecoveryReport",
     "ProvenanceTag",
     "MireyeTerrainResponse",
     "MireyeLandCoverResponse",

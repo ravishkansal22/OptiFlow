@@ -33,7 +33,8 @@ class NarratorAgent:
         frontier: List[NetworkSolution],
         active_solution: NetworkSolution,
         disruption: Optional[Disruption] = None,
-        critic_report: Optional[CriticReport] = None
+        critic_report: Optional[CriticReport] = None,
+        target_warehouses: Optional[int] = None
     ) -> Tuple[str, List[AgentTraceEvent]]:
         trace_events = []
         
@@ -49,8 +50,117 @@ class NarratorAgent:
 
         passed_cands = [c for c in candidates if c.passed_screening]
         rejected_cands = [c for c in candidates if not c.passed_screening]
+
+        # The Optimization Agent returns (None, []) when the MILP has no feasible
+        # solution -- typically too few surviving candidates to cover total demand
+        # within target_warehouses_to_open. Report that instead of dereferencing None.
+        if active_solution is None:
+            warehouses = list(graph.warehouses) if graph else []
+            total_capacity = sum(w.capacity_units for w in warehouses)
+            total_demand = sum(c.demand_units for c in graph.customers) if graph else 0.0
+            # Only target_warehouses may open at once, so the best achievable
+            # capacity is the sum of the largest that many sites -- not the total.
+            reachable_capacity = (
+                sum(sorted((w.capacity_units for w in warehouses), reverse=True)[:target_warehouses])
+                if target_warehouses else total_capacity
+            )
+
+            report = [
+                f"### No feasible network for {inputs_region}",
+                (
+                    f"The optimizer could not build a plan. "
+                    f"**{len(passed_cands)} of {len(candidates)} candidate sites** passed screening "
+                    f"and **{len(rejected_cands)} were rejected**."
+                ),
+                "\n#### Why no plan was produced",
+            ]
+
+            capacity_bound = bool(warehouses) and reachable_capacity < total_demand
+
+            if not warehouses:
+                report.append(
+                    "- No candidate survived site and hazard screening, so the facility-location "
+                    "model had nothing to choose from."
+                )
+            elif capacity_bound:
+                cap_binds = bool(target_warehouses) and target_warehouses < len(warehouses)
+                if cap_binds:
+                    report.append(
+                        f"- The plan may open at most **{target_warehouses}** of the "
+                        f"**{len(warehouses)}** surviving sites."
+                    )
+                    report.append(
+                        f"- The largest {target_warehouses} of them hold "
+                        f"`{reachable_capacity:,.0f}` units of capacity, short of the "
+                        f"`{total_demand:,.0f}` units of demand across "
+                        f"{len(graph.customers)} zones."
+                    )
+                    report.append(
+                        f"- All {len(warehouses)} surviving sites together hold "
+                        f"`{total_capacity:,.0f}` units, so the facility cap is the binding "
+                        f"constraint, not the shortlist."
+                    )
+                else:
+                    # Every surviving site could open and demand still would not be met.
+                    report.append(
+                        f"- Only **{len(warehouses)}** of the {len(candidates)} sites considered "
+                        f"passed screening."
+                    )
+                    report.append(
+                        f"- Even opening all of them provides `{total_capacity:,.0f}` units of "
+                        f"capacity, short of the `{total_demand:,.0f}` units of demand across "
+                        f"{len(graph.customers)} zones."
+                    )
+                    report.append(
+                        "- The shortlist is the binding constraint here, not the facility cap."
+                    )
+            else:
+                report.append(
+                    f"- {len(warehouses)} sites survived screening with `{total_capacity:,.0f}` "
+                    f"units of capacity against `{total_demand:,.0f}` units of demand, but no "
+                    f"assignment satisfied the capacity, supply and demand constraints together."
+                )
+
+            report.append("\n#### What to change")
+            if capacity_bound and target_warehouses and target_warehouses < len(warehouses):
+                report.append(
+                    f"- Raise the facility count above {target_warehouses} so more capacity can open."
+                )
+            elif capacity_bound:
+                shortfall = total_demand - total_capacity
+                report.append(
+                    f"- Add sites, or raise capacity on the ones you have, by at least "
+                    f"`{shortfall:,.0f}` units."
+                )
+            report.append("- Relax screening inputs so more candidate sites qualify.")
+            report.append("- Check the rejected sites below; each lists the gate it failed.")
+
+            narrative_text = "\n".join(report)
+
+            trace_events.append(AgentTraceEvent(
+                event_id=str(uuid.uuid4()),
+                agent_name=self.name,
+                action="GenerateNarrative",
+                status="warning",
+                message=(
+                    f"No feasible solution to narrate. {len(passed_cands)}/{len(candidates)} sites "
+                    f"passed screening; best {target_warehouses or len(warehouses)} hold "
+                    f"{reachable_capacity:,.0f} units against {total_demand:,.0f} units of demand."
+                ),
+                details={
+                    "passed_candidates": len(passed_cands),
+                    "total_candidates": len(candidates),
+                    "target_warehouses": target_warehouses,
+                    "reachable_capacity": reachable_capacity,
+                    "total_capacity": total_capacity,
+                    "total_demand": total_demand,
+                },
+                timestamp=""
+            ))
+            return narrative_text, trace_events
+
         selected_whs = [w for w in graph.warehouses if w.id in active_solution.selected_warehouse_ids]
-        
+
         # Calculate baseline comparisons
         baseline = next((s for s in frontier if s.is_baseline_cost_only), active_solution)
         cost_diff = active_solution.total_cost - baseline.total_cost
@@ -58,43 +168,65 @@ class NarratorAgent:
 
         # Construct structured, auditable executive report
         sections = []
-        sections.append(f"### 🌐 Executive Logistics Intelligence Summary — {inputs_region}")
+        sections.append(f"### What we found for {inputs_region}")
         sections.append(
-            f"OptiFlow evaluated **{len(candidates)} candidate logistics sites** across the corridor using live Mireye terrain, land-cover, and flood hazard telemetry. "
-            f"**{len(passed_cands)} sites passed buildability and environmental screening**, while **{len(rejected_cands)} sites were rejected** due to slope, zoning, or flood exposure constraints."
+            f"We checked **{len(candidates)} possible places** using real map data for the ground, "
+            f"the land use and the flood risk. **{len(passed_cands)} of them work**; "
+            f"**{len(rejected_cands)} were ruled out** because the ground was too steep, the land "
+            f"was not free, or the flood risk was too high."
         )
 
-        sections.append("\n#### 📊 Active Network Configuration & Pareto Position")
+        sections.append("\n#### The plan")
         wh_names = ", ".join([f"`{w.name}`" for w in selected_whs])
+        on_time = active_solution.demand_retained_pct
         sections.append(
-            f"- **Selected Facilities ({len(selected_whs)} hubs):** {wh_names}\n"
-            f"- **Total Annualized Cost:** `${active_solution.total_cost:,.2f}` (Fixed: `${active_solution.total_fixed_cost:,.2f}`, Transport: `${active_solution.total_transport_cost:,.2f}`)\n"
-            f"- **Resilience Score:** `{active_solution.resilience_score:.3f}` ({active_solution.demand_retained_pct}% customer demand fulfilled within SLA)\n"
-            f"- **Pareto Frontier Position:** Rank #{active_solution.rank} of {len(frontier)} non-dominated trade-off points."
+            f"- **Open {len(selected_whs)} "
+            f"{'warehouse' if len(selected_whs) == 1 else 'warehouses'}:** {wh_names}\n"
+            f"- **Cost:** `${active_solution.total_cost:,.0f}` a year "
+            f"(`${active_solution.total_fixed_cost:,.0f}` to run them, "
+            f"`${active_solution.total_transport_cost:,.0f}` to move goods)\n"
+            f"- **Deliveries on time:** `{on_time:.0f}%` of orders arrive inside the delivery "
+            f"window you asked for\n"
+            f"- **Safety score:** `{active_solution.resilience_score:.2f}` out of 1.00, where "
+            f"higher means the network copes better if something goes wrong"
         )
 
         if not active_solution.is_baseline_cost_only and cost_diff > 0:
             sections.append(
-                f"\n💡 **Resilience Premium:** Opting for this resilient configuration requires a +${cost_diff:,.0f} (+{cost_diff/baseline.total_cost*100:.1f}%) investment over the least-cost baseline, but improves disruption survival by **+{resilience_gain:.1f} percentage points**."
+                f"\n#### Why not just pick the cheapest?"
+            )
+            sections.append(
+                f"The cheapest plan saves you `${cost_diff:,.0f}` a year "
+                f"(`{cost_diff / baseline.total_cost * 100:.0f}%` less), but it is "
+                f"**{resilience_gain:.0f} points less safe**. This plan spends a little more to "
+                f"keep deliveries running when a site floods or a road closes."
             )
 
         if disruption:
-            sections.append("\n#### 🚨 Active Disruption & Sub-60s Recovery Impact")
+            sections.append("\n#### If this goes wrong")
             sections.append(
-                f"- **Disruption Triggered:** {disruption.title} ({disruption.disruption_type.upper()})\n"
-                f"- **Direct Facility Impact:** {len(disruption.affected_warehouse_ids)} warehouse(s) compromised.\n"
-                f"- **Post-Recovery Demand Retained:** `{active_solution.demand_retained_pct}%`\n"
-                f"- **Added Detour / Recovery Cost:** `${active_solution.total_transport_cost - baseline.total_transport_cost:,.2f}`"
+                f"- **What we simulated:** {disruption.title}\n"
+                f"- **Warehouses knocked out:** {len(disruption.affected_warehouse_ids)}\n"
+                f"- **Deliveries still on time afterwards:** `{on_time:.0f}%`\n"
+                f"- **Extra delivery cost:** "
+                f"`${active_solution.total_transport_cost - baseline.total_transport_cost:,.0f}`"
             )
 
         if critic_report:
-            sections.append("\n#### 🛡️ Critic Agent Evidence & Constraint Audit")
-            status_badge = "✅ PASSED" if critic_report.passed else "⚠️ WARNING"
-            sections.append(
-                f"- **Audit Status:** {status_badge}\n"
-                f"- **Mireye Telemetry Coverage:** `{critic_report.evidence_coverage_pct}%` verified with non-stale response hashes.\n"
-                f"- **Constraint Violations:** `{len(critic_report.constraint_violations)}`"
-            )
+            sections.append("\n#### Our own checks")
+            if critic_report.passed:
+                sections.append(
+                    f"Everything checks out. `{critic_report.evidence_coverage_pct:.0f}%` of the "
+                    f"numbers trace back to a real map lookup, and no limit is broken."
+                )
+            else:
+                issue_count = len(critic_report.constraint_violations)
+                sections.append(
+                    f"`{critic_report.evidence_coverage_pct:.0f}%` of the numbers trace back to a "
+                    f"real map lookup. **{issue_count} "
+                    f"{'thing needs' if issue_count == 1 else 'things need'} a look** before you "
+                    f"commit money \u2014 see the Checks tab."
+                )
 
         narrative_text = "\n".join(sections)
 

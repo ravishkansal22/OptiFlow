@@ -31,9 +31,16 @@ class RouteGraphBuilderAgent:
         customers_raw: List[Dict[str, Any]],
         hazard_zones_raw: List[Dict[str, Any]],
         region_name: str,
-        bounding_box: List[float]
+        bounding_box: List[float],
+        on_event=None
     ) -> Tuple[LogisticsGraph, List[AgentTraceEvent]]:
         trace_events = []
+
+        def emit(event: AgentTraceEvent):
+            """Record the event, and hand it straight on so the UI sees it now."""
+            trace_events.append(event)
+            if on_event:
+                on_event(event)
 
         start_event = AgentTraceEvent(
             event_id=str(uuid.uuid4()),
@@ -43,7 +50,7 @@ class RouteGraphBuilderAgent:
             message="Constructing weighted multimodal logistics graph with Mireye routing.",
             timestamp=""
         )
-        trace_events.append(start_event)
+        emit(start_event)
 
         # 1. Build Supplier Nodes
         suppliers = [SupplierNode(**s) for s in suppliers_raw]
@@ -71,8 +78,31 @@ class RouteGraphBuilderAgent:
         # 4. Fetch Regional Hazards via Gateway
         hazards_resp = await self.gateway.get_regional_hazards(region_name, bounding_box, known_hazards=hazard_zones_raw)
 
+        emit(AgentTraceEvent(
+            event_id=str(uuid.uuid4()),
+            agent_name=self.name,
+            action="GraphConstruction",
+            status="progress",
+            message=(
+                f"{len(warehouses)} qualified sites, {len(customers)} demand zones and "
+                f"{len(suppliers)} suppliers in scope. Measuring "
+                f"{len(suppliers) * len(warehouses) + len(warehouses) * len(customers)} routes."
+            ),
+            details={
+                "warehouses": len(warehouses),
+                "customers": len(customers),
+                "suppliers": len(suppliers),
+                "hazards": len(hazards_resp.hazards),
+            },
+            timestamp=""
+        ))
+
         # 5. Batched Routing Queries for Edges
         edges: List[LogisticsEdge] = []
+        total_legs = len(suppliers) * len(warehouses) + len(warehouses) * len(customers)
+        # A route matrix this size takes minutes; report progress as it is measured
+        # rather than going silent until the whole graph is built.
+        report_every = max(10, total_legs // 12)
 
         # (a) Supplier -> Warehouse Edges
         for sup in suppliers:
@@ -95,6 +125,16 @@ class RouteGraphBuilderAgent:
                     provenance=routing.provenance
                 )
                 edges.append(edge)
+                if len(edges) % report_every == 0:
+                    emit(AgentTraceEvent(
+                        event_id=str(uuid.uuid4()),
+                        agent_name=self.name,
+                        action="RouteMatrixProgress",
+                        status="progress",
+                        message=f"Measured {len(edges)} of {total_legs} routes.",
+                        details={"measured": len(edges), "total": total_legs},
+                        timestamp=""
+                    ))
 
         # (b) Warehouse -> Customer Edges
         for wh in warehouses:
@@ -117,6 +157,16 @@ class RouteGraphBuilderAgent:
                     provenance=routing.provenance
                 )
                 edges.append(edge)
+                if len(edges) % report_every == 0:
+                    emit(AgentTraceEvent(
+                        event_id=str(uuid.uuid4()),
+                        agent_name=self.name,
+                        action="RouteMatrixProgress",
+                        status="progress",
+                        message=f"Measured {len(edges)} of {total_legs} routes.",
+                        details={"measured": len(edges), "total": total_legs},
+                        timestamp=""
+                    ))
 
         graph = LogisticsGraph(
             suppliers=suppliers,
@@ -126,7 +176,7 @@ class RouteGraphBuilderAgent:
             hazards=hazards_resp.hazards
         )
 
-        trace_events.append(AgentTraceEvent(
+        emit(AgentTraceEvent(
             event_id=str(uuid.uuid4()),
             agent_name=self.name,
             action="GraphConstruction",

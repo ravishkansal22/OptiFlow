@@ -17,9 +17,20 @@ class SiteGenerationAgent:
         self.gateway = gateway
         self.name = "Site Generation Agent"
 
-    async def execute(self, state: NetworkState, raw_candidate_seeds: List[Dict[str, Any]]) -> Tuple[List[Candidate], List[AgentTraceEvent]]:
+    async def execute(
+        self,
+        state: NetworkState,
+        raw_candidate_seeds: List[Dict[str, Any]],
+        on_event=None
+    ) -> Tuple[List[Candidate], List[AgentTraceEvent]]:
         trace_events = []
         candidates: List[Candidate] = []
+
+        def emit(event: AgentTraceEvent):
+            """Record the event, and hand it straight on so the UI sees it now."""
+            trace_events.append(event)
+            if on_event:
+                on_event(event)
         
         start_event = AgentTraceEvent(
             event_id=str(uuid.uuid4()),
@@ -29,7 +40,7 @@ class SiteGenerationAgent:
             message=f"Beginning candidate warehouse evaluation for {len(raw_candidate_seeds)} candidate sites across region.",
             timestamp="",
         )
-        trace_events.append(start_event)
+        emit(start_event)
 
         for seed in raw_candidate_seeds:
             c_id = seed.get("id", f"cand_{uuid.uuid4().hex[:6]}")
@@ -94,7 +105,7 @@ class SiteGenerationAgent:
 
             # Trace event
             status_text = "PASS" if passed else f"REJECT ({', '.join(rejection_reasons)})"
-            trace_events.append(AgentTraceEvent(
+            emit(AgentTraceEvent(
                 event_id=str(uuid.uuid4()),
                 agent_name=self.name,
                 action="CandidateScreened",
@@ -112,7 +123,7 @@ class SiteGenerationAgent:
             ))
 
         surviving_count = sum(1 for c in candidates if c.passed_screening)
-        trace_events.append(AgentTraceEvent(
+        emit(AgentTraceEvent(
             event_id=str(uuid.uuid4()),
             agent_name=self.name,
             action="SiteSitingScreening",
