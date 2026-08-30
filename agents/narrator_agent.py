@@ -1,5 +1,7 @@
+import asyncio
 import os
 import uuid
+import httpx
 from typing import List, Dict, Any, Tuple, Optional
 from schemas.state import (
     NetworkState,
@@ -250,7 +252,233 @@ class NarratorAgent:
         active_solution: NetworkSolution
     ) -> Dict[str, Any]:
         """
-        Answers free-form what-if questions by querying structured state fields and Mireye provenance.
+        Answers free-form what-if questions.
+
+        The question is sent to an LLM (OpenAI, or Gemini if only that key is set)
+        together with a grounding context built entirely from the state on screen,
+        so the model can only reason about real candidates, real flows and real
+        provenance -- not general knowledge. If no key is configured, or the call
+        fails, this falls back to the deterministic rule/template answer below so
+        the drawer keeps working offline.
+        """
+        q_lower = query.lower()
+        matched_candidate = next(
+            (c for c in candidates if c.name.lower() in q_lower or c.id.lower() in q_lower),
+            None,
+        )
+
+        context = self._build_grounding_context(candidates, graph, frontier, active_solution, matched_candidate)
+        llm_answer = await self._call_llm(context, query)
+
+        if llm_answer:
+            result: Dict[str, Any] = {"answer": llm_answer}
+            if matched_candidate is not None:
+                result["related_candidate_id"] = matched_candidate.id
+                result["provenance"] = matched_candidate.provenance
+            if "cost" in q_lower and "resilience" in q_lower:
+                result["frontier_count"] = len(frontier)
+            if "flood" in q_lower or "disrupt" in q_lower or "outage" in q_lower:
+                result["high_risk_warehouses"] = [w.id for w in graph.warehouses if w.flood_risk_score > 0.35]
+            return result
+
+        return self._rule_based_answer(query, candidates, graph, frontier, active_solution)
+
+    def _build_grounding_context(
+        self,
+        candidates: List[Candidate],
+        graph: LogisticsGraph,
+        frontier: List[NetworkSolution],
+        active_solution: NetworkSolution,
+        matched_candidate: Optional[Candidate] = None,
+    ) -> str:
+        """Serializes the network on screen into the text an LLM answers from."""
+        passed = [c for c in candidates if c.passed_screening]
+        rejected = [c for c in candidates if not c.passed_screening]
+        selected_ids = set(active_solution.selected_warehouse_ids)
+
+        lines = [
+            "You are the OptiFlow Narrator, a supply-chain assistant embedded in a logistics "
+            "network-optimization tool. Answer the user's question using ONLY the facts listed "
+            "below -- they describe the exact network currently on screen (Mireye-sourced site "
+            "data, the MILP/NSGA-II optimizer output and the Critic audit). Do not invent sites, "
+            "numbers or events that are not present here; if the data does not answer the "
+            "question, say so plainly instead of guessing. Reply in 2-6 sentences of markdown, "
+            "citing concrete numbers from the data, in plain language a non-technical operator "
+            "can act on.",
+            "",
+            f"## Candidates ({len(candidates)} total, {len(passed)} passed screening, {len(rejected)} rejected)",
+        ]
+        for c in candidates:
+            if c.id in selected_ids:
+                status = "OPEN in the active plan"
+            elif c.passed_screening:
+                status = "passed screening, not selected in the active plan"
+            else:
+                status = "REJECTED: " + ("; ".join(c.rejection_reasons) or "failed screening")
+            lines.append(
+                f"- {c.name} (id={c.id}): {status}. capacity={c.capacity_units:,.0f} units, "
+                f"fixed_cost=${c.fixed_operating_cost:,.0f}/yr, flood_risk={c.flood_risk_score:.2f}, "
+                f"slope={c.terrain_slope_pct:.1f}%, elevation={c.elevation_m:.0f}m, "
+                f"land_cover={c.land_cover}"
+            )
+
+        lines.append("")
+        lines.append(f"## Active plan: {active_solution.name}")
+        lines.append(
+            f"- Opens {len(active_solution.selected_warehouse_ids)} warehouses, total cost "
+            f"${active_solution.total_cost:,.0f}/yr (${active_solution.total_fixed_cost:,.0f} fixed "
+            f"+ ${active_solution.total_transport_cost:,.0f} transport), demand retained "
+            f"{active_solution.demand_retained_pct:.0f}%, resilience score "
+            f"{active_solution.resilience_score:.3f}"
+        )
+
+        lines.append("")
+        lines.append(f"## Pareto frontier ({len(frontier)} solutions)")
+        for s in frontier:
+            tag = ""
+            if s.solution_id == active_solution.solution_id:
+                tag = " [ACTIVE]"
+            elif s.is_baseline_cost_only:
+                tag = " [least-cost baseline]"
+            lines.append(f"- {s.name}{tag}: cost=${s.total_cost:,.0f}/yr, resilience={s.resilience_score:.3f}")
+
+        lines.append("")
+        lines.append(
+            f"## Network graph: {len(graph.warehouses)} candidate warehouses, "
+            f"{len(graph.customers)} customer zones, {len(graph.suppliers)} suppliers"
+        )
+        high_risk = [w for w in graph.warehouses if w.flood_risk_score > 0.35]
+        if high_risk:
+            lines.append(
+                "High flood-risk warehouses: "
+                + ", ".join(f"{w.name} (risk={w.flood_risk_score:.2f}, status={w.status})" for w in high_risk)
+            )
+
+        if matched_candidate is not None:
+            lines.append("")
+            lines.append(f"## The question appears to be specifically about '{matched_candidate.name}'.")
+
+        return "\n".join(lines)
+
+    async def _call_llm(self, context: str, query: str) -> Optional[str]:
+        """Routes to whichever provider has a key configured; None if neither does or both fail."""
+        if self.gemini_key:
+            answer = await self._call_gemini(context, query)
+            if answer:
+                return answer
+        if self.openai_key:
+            return await self._call_openai(context, query)
+        return None
+
+    @staticmethod
+    def _log_llm_error(provider: str, exc: Exception) -> None:
+        """
+        Logs an LLM call failure without ever printing the request itself -- for
+        Gemini in particular, the API key travels as a URL query param, and
+        httpx's default exception message embeds the full request URL. A generic
+        `print(exc)` would put a live key straight into server logs.
+        """
+        if isinstance(exc, httpx.HTTPStatusError):
+            body = exc.response.text
+            if len(body) > 300:
+                body = body[:300] + "...(truncated)"
+            print(f"[NarratorAgent] {provider} call failed, falling back: HTTP {exc.response.status_code} -- {body}")
+        else:
+            print(f"[NarratorAgent] {provider} call failed, falling back: {type(exc).__name__}: {exc}")
+
+    async def _call_openai(self, context: str, query: str) -> Optional[str]:
+        try:
+            async with httpx.AsyncClient(timeout=45.0) as client:
+                resp = await client.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.openai_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": os.getenv("OPENAI_NARRATOR_MODEL", "gpt-4o-mini"),
+                        "messages": [
+                            {"role": "system", "content": context},
+                            {"role": "user", "content": query},
+                        ],
+                        "temperature": 0.2,
+                        "max_tokens": 500,
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                return data["choices"][0]["message"]["content"].strip()
+        except Exception as exc:
+            self._log_llm_error("OpenAI", exc)
+            return None
+
+    async def _call_gemini(self, context: str, query: str, _retries_left: int = 1) -> Optional[str]:
+        try:
+            model = os.getenv("GEMINI_NARRATOR_MODEL", "gemini-2.5-flash")
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+            async with httpx.AsyncClient(timeout=45.0) as client:
+                resp = await client.post(
+                    url,
+                    # The key travels as a header, not a `?key=` query param -- a
+                    # query param ends up in the request URL, which httpx (and most
+                    # proxies/log lines) will happily echo into error messages.
+                    headers={"x-goog-api-key": self.gemini_key},
+                    json={
+                        "system_instruction": {"parts": [{"text": context}]},
+                        "contents": [{"role": "user", "parts": [{"text": query}]}],
+                        "generationConfig": {
+                            "temperature": 0.2,
+                            "maxOutputTokens": 800,
+                            # Current Gemini flash models "think" before answering,
+                            # spending part of maxOutputTokens on a hidden reasoning
+                            # pass. A chatbot answer doesn't need that -- and left on,
+                            # a small token budget can be consumed by the thinking
+                            # pass before the visible answer is even written,
+                            # producing a truncated fragment instead of a full reply.
+                            "thinkingConfig": {"thinkingBudget": 0},
+                        },
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                parts = data["candidates"][0]["content"]["parts"]
+                # Defensive: even with thinking disabled, skip any part explicitly
+                # marked as a thought rather than assuming parts[0] is the answer.
+                text = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
+                return text or None
+        except httpx.HTTPStatusError as exc:
+            # 503 (model temporarily overloaded) and 429 (rate limited) are the
+            # transient ones -- worth one retry rather than dropping straight to
+            # the canned fallback and making a passing capacity blip look like a
+            # broken chatbot.
+            if _retries_left > 0 and exc.response.status_code in (503, 429):
+                await asyncio.sleep(1.5)
+                return await self._call_gemini(context, query, _retries_left=_retries_left - 1)
+            self._log_llm_error("Gemini", exc)
+            return None
+        except httpx.TimeoutException as exc:
+            # A slow response under load is just as transient as a 503 -- retry
+            # once before giving up on this provider.
+            if _retries_left > 0:
+                return await self._call_gemini(context, query, _retries_left=_retries_left - 1)
+            self._log_llm_error("Gemini", exc)
+            return None
+        except Exception as exc:
+            self._log_llm_error("Gemini", exc)
+            return None
+
+    def _rule_based_answer(
+        self,
+        query: str,
+        candidates: List[Candidate],
+        graph: LogisticsGraph,
+        frontier: List[NetworkSolution],
+        active_solution: NetworkSolution
+    ) -> Dict[str, Any]:
+        """
+        Deterministic fallback used when no LLM key is configured (or the call
+        failed): answers free-form what-if questions by pattern-matching structured
+        state fields and Mireye provenance directly.
         """
         q_lower = query.lower()
 
